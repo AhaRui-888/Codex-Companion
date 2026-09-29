@@ -1,7 +1,7 @@
 param(
     [switch]$Test,
     [string]$OutputDirectory = '',
-    [ValidateSet('all', 'ui', 'advertisements', 'gallery', 'restart', 'update')]
+    [ValidateSet('all', 'ui', 'advertisements', 'gallery', 'restart', 'update', 'relay')]
     [string]$TestSuite = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -21,7 +21,12 @@ $output = if ([String]::IsNullOrWhiteSpace($OutputDirectory)) {
     [IO.Path]::GetFullPath((Join-Path $taskRoot $OutputDirectory))
 }
 New-Item -ItemType Directory -Force -Path $intermediate,$output | Out-Null
-Set-Content -LiteralPath $versionSource -Value ('[assembly: System.Reflection.AssemblyVersion("' + $assemblyVersion + '")]') -Encoding ASCII
+Set-Content -LiteralPath $versionSource -Encoding ASCII -Value @(
+    '[assembly: System.Reflection.AssemblyTitle("Codex Companion")]'
+    '[assembly: System.Reflection.AssemblyProduct("Codex Companion")]'
+    ('[assembly: System.Reflection.AssemblyVersion("' + $assemblyVersion + '")]')
+    ('[assembly: System.Reflection.AssemblyFileVersion("' + $assemblyVersion + '")]')
+)
 $helper = Join-Path $intermediate 'MidWebCredential.exe'
 & $compiler /nologo /target:exe /optimize+ /platform:anycpu /langversion:5 /r:System.Security.dll "/out:$helper" (Join-Path $taskRoot 'src\CredentialProgram.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Credential helper compilation failed.' }

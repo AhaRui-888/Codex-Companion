@@ -149,7 +149,7 @@ internal static class AutoUpdater
         }
     }
 
-    private static async Task DownloadVerifiedAsync(HttpClient client, string url, string path, long expectedBytes, string expectedHash)
+    internal static async Task DownloadVerifiedAsync(HttpClient client, string url, string path, long expectedBytes, string expectedHash)
     {
         using (HttpResponseMessage response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
         {

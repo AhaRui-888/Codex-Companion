@@ -18,14 +18,22 @@ jobs:
         run: |
           $version = (Get-Content version.txt -Raw).Trim()
           if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag and version.txt differ.' }
-      - name: Build and test
+      - name: Build
         shell: pwsh
-        run: .\build.ps1 -Test -TestSuite ui
-      - name: Verify update assets
+        run: .\build.ps1
+      - name: Compile and test updater
+        shell: pwsh
+        run: .\build.ps1 -Test -TestSuite update
+      - name: Verify assembly version
         shell: pwsh
         run: |
-          & .\.build\Regression.exe (Join-Path $env:RUNNER_TEMP 'companion-update-tests') --update
-          if ($LASTEXITCODE -ne 0) { throw 'Updater tests failed.' }
+          $file = 'bin\CodexCompanion.exe'
+          if (([Reflection.AssemblyName]::GetAssemblyName((Resolve-Path $file)).Version.ToString(3)) -ne (Get-Content version.txt -Raw).Trim()) { throw 'Assembly version mismatch.' }
+      - name: Verify relay contract
+        shell: pwsh
+        run: |
+          & .\.build\Regression.exe (Join-Path $env:RUNNER_TEMP 'companion-relay-tests') --relay
+          if ($LASTEXITCODE -ne 0) { throw 'Relay tests failed.' }
       - name: Package and hash
         shell: pwsh
         run: |

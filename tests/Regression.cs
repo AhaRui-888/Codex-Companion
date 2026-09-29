@@ -12,6 +12,15 @@ internal static class Regression
 {
     private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
 
+    internal static void RunRelayContract()
+    {
+        TestNormalizeUrl();
+        TestRelayProviderSettings();
+        TestConnectionSuccess();
+        TestConnectionErrorMapping();
+        Console.WriteLine("Relay contract: URL, provider settings, Responses success and error mapping passed.");
+    }
+
     public static int Run(string directory)
     {
         if (String.IsNullOrWhiteSpace(directory)) throw new ArgumentException("directory is required.");

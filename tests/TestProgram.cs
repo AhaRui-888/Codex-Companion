@@ -11,7 +11,7 @@ internal static class TestProgram
         {
             System.Windows.Forms.Application.EnableVisualStyles();
             System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
-            if (args.Length != 1 && !(args.Length == 2 && (args[1] == "--advertisements" || args[1] == "--ui" || args[1] == "--gallery" || args[1] == "--restart" || args[1] == "--update"))) return 2;
+            if (args.Length != 1 && !(args.Length == 2 && (args[1] == "--advertisements" || args[1] == "--ui" || args[1] == "--gallery" || args[1] == "--restart" || args[1] == "--update" || args[1] == "--relay"))) return 2;
             string directory = Path.GetFullPath(args[0]);
             if (Directory.Exists(directory)) throw new InvalidOperationException("测试目录必须是新的独立目录。");
             Directory.CreateDirectory(directory);
@@ -19,7 +19,8 @@ internal static class TestProgram
             {
                 if (args[1] == "--gallery") return GalleryTests.Run(Path.Combine(directory, "gallery"), false);
                 if (args[1] == "--restart") return RestartTests.Run();
-                if (args[1] == "--update") { AutoUpdaterTests.Run(); return 0; }
+                if (args[1] == "--update") { AutoUpdaterTests.Run(Path.Combine(directory, "update")); return 0; }
+                if (args[1] == "--relay") { Regression.RunRelayContract(); return 0; }
                 if (args[1] == "--ui")
                 {
                     DesktopUiTests.Run(Path.Combine(directory, "ui"));
@@ -29,7 +30,7 @@ internal static class TestProgram
                 return 0;
             }
             int regression = Regression.Run(directory);
-            AutoUpdaterTests.Run();
+            AutoUpdaterTests.Run(Path.Combine(directory, "update"));
             int restart = RestartTests.Run();
             // RestartTests creates WinForms controls. Keep synchronous gallery
             // regression waits off the UI synchronization context.
