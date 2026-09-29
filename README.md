@@ -1,6 +1,6 @@
 # Codex Companion
 
-一个用于 Windows 10/11 的小型配置工具：为已安装的 Codex 桌面版配置 mid-web 中转、原生主题、QQ 风格外观及内置宠物选择。程序不承接模型转发、充值或计费；这些仍由 mid-web 提供。
+一个用于 Windows 10/11 的小型配置工具：为已安装的 Codex 桌面版配置 Codex Relay 中转、原生主题、QQ 风格外观及内置宠物选择。程序不承接模型转发、充值或计费；这些仍由 Codex Relay 提供。
 
 ## 使用
 
@@ -10,7 +10,7 @@
 2. 双击 `bin/CodexCompanion.exe`，无需安装 Node.js、Python 或其他运行时。
 3. 输入平台 API Key。点击“一键配置”后，程序会将 Codex 的 `auth.json` 替换为仅包含 `OPENAI_API_KEY` 的对象，填入该密钥，并更新 `config.toml` 的 `Codex Relay` provider。
 4. 选择主题、皮肤和宠物，点击“一键配置”。助手会正常退出 Codex、保存配置（`model` 固定为 `gpt-5.6-sol`），成功后自动打开 Codex。在 Codex 新建任务使用中转。Codex 已关闭界面但仍在后台运行时，助手会先通过官方托盘回调恢复主窗口，再调用“文件 → 退出”。
-5. 点击“充值中心”会在系统浏览器打开 `https://xai-tools.cn/#recharge`；登录后直接进入 mid-web 充值页。点击“官方网站”会打开 `https://xai-tools.cn`。
+5. 点击“充值中心”会在系统浏览器打开 `https://xai-tools.cn/#recharge`；登录后直接进入 Codex Relay 充值页。点击“官方网站”会打开 `https://xai-tools.cn`。
 
 助手启动后会从 `https://xai-tools.cn/api/advertisements/companion` 拉取 mid-web 广告管理中的启用广告，并每分钟刷新。单条广告显示宣传栏和详情入口；多条广告按后台排序每 6 秒横向滑动切换，也可使用左右按钮、方向键或滚轮切换，悬停、聚焦或查看详情时暂停自动轮播。没有广告或服务暂时不可用时隐藏宣传栏并恢复布局，下次刷新继续重试。宣传栏显示时下方内容自动下移并调整窗口高度；屏幕空间不足时可滚动查看。广告内容不携带本机 API Key，也不会写入本地配置。
 
