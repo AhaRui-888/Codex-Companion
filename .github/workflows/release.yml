@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches version
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.txt -Raw).Trim()
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag and version.txt differ.' }
+      - name: Build and test
+        shell: pwsh
+        run: .\build.ps1 -Test -TestSuite ui
+      - name: Verify update assets
+        shell: pwsh
+        run: |
+          & .\.build\Regression.exe (Join-Path $env:RUNNER_TEMP 'companion-update-tests') --update
+          if ($LASTEXITCODE -ne 0) { throw 'Updater tests failed.' }
+      - name: Package and hash
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item bin\CodexCompanion.exe dist\CodexCompanion.exe
+          $hash = (Get-FileHash dist\CodexCompanion.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content dist\CodexCompanion.exe.sha256 "$hash  CodexCompanion.exe" -Encoding ascii
+          New-Item -ItemType Directory -Force dist\portable\theme-gallery | Out-Null
+          Copy-Item bin\CodexCompanion.exe dist\portable\CodexCompanion.exe
+          Copy-Item assets\theme-gallery\*.json dist\portable\theme-gallery\ -ErrorAction SilentlyContinue
+          Copy-Item assets\THIRD-PARTY-NOTICES.txt dist\portable\
+          Compress-Archive dist\portable\* dist\CodexCompanion-Windows.zip
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/CodexCompanion.exe
+            dist/CodexCompanion.exe.sha256
+            dist/CodexCompanion-Windows.zip
+          generate_release_notes: true
