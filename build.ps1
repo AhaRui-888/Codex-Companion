@@ -1,7 +1,7 @@
 param(
     [switch]$Test,
     [string]$OutputDirectory = '',
-    [ValidateSet('all', 'ui', 'advertisements', 'gallery', 'restart', 'update', 'relay')]
+    [ValidateSet('all', 'ui', 'advertisements', 'gallery', 'restart', 'update', 'relay', 'configuration', 'core')]
     [string]$TestSuite = 'all'
 )
 $ErrorActionPreference = 'Stop'

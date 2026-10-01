@@ -18,25 +18,27 @@ public static class CodexConfig
         string scratch = Path.Combine(dataDirectory, "staging", Guid.NewGuid().ToString("N"));
         PrivateFiles.EnsureDirectory(scratch);
         string path = Path.Combine(scratch, "config.toml");
-        if (original != null) File.WriteAllBytes(path, original);
         try
         {
+            if (original != null) File.WriteAllBytes(path, original);
             var info = new ProcessStartInfo(cli, "app-server --listen stdio:// -c analytics.enabled=false")
             {
                 UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
                 StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
-                // Keep the child out of scratch so Windows does not retain the
-                // staging directory as the process current directory on exit.
-                WorkingDirectory = Path.GetTempPath()
+                // An isolated cwd avoids unrelated project-scoped .codex
+                // overrides from the user's TEMP directory or its parents.
+                WorkingDirectory = scratch
             };
             info.EnvironmentVariables["CODEX_HOME"] = scratch;
+            using (var lifetime = new ConfigurationServiceLifetime())
             using (var process = Process.Start(info))
             // .NET Framework's StandardInput defaults to the Windows code page
             // (e.g. GB2312). JSON-RPC requires UTF-8, including Chinese file paths.
             // Do not emit a BOM before the first JSON message.
             using (var input = new StreamWriter(process.StandardInput.BaseStream, new UTF8Encoding(false)))
             {
+                lifetime.Attach(process);
                 // Drain diagnostics without logging: a user's configuration may contain secrets.
                 var diagnostics = process.StandardError.ReadToEndAsync();
                 try
@@ -44,15 +46,15 @@ public static class CodexConfig
                     Request(process, input, 1, "initialize", new { clientInfo = new { name = "midweb_codex_companion", version = "1.0.0" } });
                     input.WriteLine(Json.Write(new { method = "initialized" }));
                     input.Flush();
-                    var response = Request(process, input, 2, "config/read", new { includeLayers = false });
+                    var response = Request(process, input, 2, "config/read", new { includeLayers = true });
                     object value;
                     var config = response.TryGetValue("config", out value) ? value as Dictionary<string, object> : null;
                     if (config != null && !String.IsNullOrEmpty(Json.Text(config, "profile")))
                         throw new InvalidOperationException("当前 Codex 启用了独立 profile，暂不自动覆盖，请先使用默认配置。");
-                    Request(process, input, 3, "config/batchWrite", new { edits = edits, filePath = path, reloadUserConfig = false });
+                    Request(process, input, 3, "config/batchWrite", new { edits = edits, filePath = path, reloadUserConfig = true });
                     // A read after writing verifies that Codex can load the generated TOML.
-                    var verified = Request(process, input, 4, "config/read", new { includeLayers = false });
-                    if (!verified.ContainsKey("config")) throw new InvalidDataException("Codex 配置校验没有完成。");
+                    var verified = Request(process, input, 4, "config/read", new { includeLayers = true });
+                    VerifyEdits(verified, path, edits);
                     return File.ReadAllBytes(path);
                 }
                 finally
@@ -73,6 +75,85 @@ public static class CodexConfig
         }
     }
 
+    internal static void VerifyEdits(Dictionary<string, object> response, string configPath, List<object> edits)
+    {
+        object rawConfig;
+        var effective = response.TryGetValue("config", out rawConfig) ? rawConfig as Dictionary<string, object> : null;
+        object rawLayers;
+        var layers = response.TryGetValue("layers", out rawLayers) ? rawLayers as object[] : null;
+        Dictionary<string, object> written = null;
+        if (layers != null) foreach (object layer in layers)
+        {
+            var row = layer as Dictionary<string, object>;
+            object rawName, rawValues;
+            if (row == null || !row.TryGetValue("name", out rawName)) continue;
+            var name = rawName as Dictionary<string, object>;
+            if (name == null || Json.Text(name, "type") != "user") continue;
+            string file = Json.Text(name, "file");
+            if (file != null && String.Equals(Path.GetFullPath(file), Path.GetFullPath(configPath), StringComparison.OrdinalIgnoreCase) &&
+                row.TryGetValue("config", out rawValues)) written = rawValues as Dictionary<string, object>;
+        }
+        if (effective == null || written == null) throw new InvalidDataException("无法确认 Codex 实际读取了目标配置文件；原配置未修改。");
+        foreach (object item in edits)
+        {
+            var edit = Json.Read(Json.Write(item));
+            string key = Json.Text(edit, "keyPath");
+            object expected = edit["value"];
+            object actual;
+            if (!TryValue(written, key, out actual) || !EqualValue(expected, actual))
+                throw new InvalidDataException("Codex 配置写入校验失败（" + key + "）；原配置未修改。");
+            // Some legacy passthrough keys are not exposed by config/read's
+            // typed config. The user layer above still verifies their TOML.
+            if (TryValue(effective, key, out actual) && !EqualValue(expected, actual))
+                throw new InvalidDataException("Codex 的有效配置被其他配置层覆盖（" + key + "）；原配置未修改。");
+        }
+    }
+
+    static bool TryValue(Dictionary<string, object> values, string key, out object value)
+    {
+        value = values;
+        foreach (string part in key.Split('.'))
+        {
+            var table = value as Dictionary<string, object>;
+            if (table == null || !table.TryGetValue(part, out value)) return false;
+        }
+        return true;
+    }
+
+    static bool EqualValue(object expected, object actual)
+    {
+        // config/read's raw layers may encode JSON numbers using serde_json's
+        // arbitrary-precision wrapper; effective config uses normal numbers.
+        var number = actual as Dictionary<string, object>;
+        if (number != null && number.Count == 1 && number.ContainsKey("$serde_json::private::Number") &&
+            expected != null && !(expected is string) && !(expected is bool))
+            return Convert.ToString(expected, System.Globalization.CultureInfo.InvariantCulture) ==
+                Convert.ToString(number["$serde_json::private::Number"], System.Globalization.CultureInfo.InvariantCulture);
+        var table = expected as Dictionary<string, object>;
+        if (table != null)
+        {
+            var other = actual as Dictionary<string, object>;
+            if (other == null) return false;
+            foreach (var pair in table)
+            {
+                object value;
+                if (!other.TryGetValue(pair.Key, out value) || !EqualValue(pair.Value, value)) return false;
+            }
+            return true;
+        }
+        var array = expected as object[];
+        if (array != null)
+        {
+            var other = actual as object[];
+            if (other == null || array.Length != other.Length) return false;
+            for (int index = 0; index < array.Length; index++) if (!EqualValue(array[index], other[index])) return false;
+            return true;
+        }
+        return Object.Equals(expected, actual) ||
+            (expected != null && actual != null && !(expected is string) && !(actual is string) &&
+                Convert.ToString(expected, System.Globalization.CultureInfo.InvariantCulture) == Convert.ToString(actual, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     static void DeleteScratch(string path)
     {
         // Codex may release inherited handles a moment after its process exits.
@@ -86,8 +167,8 @@ public static class CodexConfig
                 Directory.Delete(path, true);
                 return;
             }
-            catch (IOException) { Thread.Sleep(100); }
-            catch (UnauthorizedAccessException) { Thread.Sleep(100); }
+            catch (IOException error) { if (attempt == 0 || attempt == 49) Debug.WriteLine("Staging cleanup " + error.GetType().Name + " 0x" + error.HResult.ToString("X8")); Thread.Sleep(100); }
+            catch (UnauthorizedAccessException error) { if (attempt == 0 || attempt == 49) Debug.WriteLine("Staging cleanup " + error.GetType().Name + " 0x" + error.HResult.ToString("X8")); Thread.Sleep(100); }
         }
         // Cleanup is best-effort after the child has exited. The next run uses
         // a fresh GUID, and no live configuration file has been touched here.

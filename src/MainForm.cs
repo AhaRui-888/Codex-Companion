@@ -237,12 +237,12 @@ public class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
-        var keyLabel = CreateLabel("mid-web API Key", 13, mutedColor);
+        var keyLabel = CreateLabel("API Key", 13, mutedColor);
         keyLabel.Dock = DockStyle.Fill;
         layout.Controls.Add(keyLabel, 0, 0);
         apiKeyTextBox = new TextBox { UseSystemPasswordChar = true, BorderStyle = BorderStyle.None,
             BackColor = inputBack, ForeColor = textColor, Dock = DockStyle.Fill,
-            Font = new Font("Segoe UI", 15, FontStyle.Regular, GraphicsUnit.Pixel), AccessibleName = "mid-web API Key" };
+            Font = new Font("Segoe UI", 15, FontStyle.Regular, GraphicsUnit.Pixel), AccessibleName = "API Key" };
         var keyFrame = new DesktopSurface { Dock = DockStyle.Fill, BackColor = inputBack,
             CornerRadius = 10, Padding = new Padding(12, 11, 10, 7), Margin = Padding.Empty };
         apiKeyTextBox.Enter += delegate { keyFrame.BorderColor = accentDark; keyFrame.Invalidate(); };
@@ -519,7 +519,7 @@ public class MainForm : Form
         }
         else
         {
-            credentialHintLabel.Text = "粘贴 mid-web 的 API Key，仅在本机加密保存。";
+            credentialHintLabel.Text = "粘贴 API Key，仅在本机加密保存。";
         }
     }
 

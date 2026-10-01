@@ -202,7 +202,7 @@ public static class CodexDesktopRestart
                         !name.Equals("ChatGPT", StringComparison.OrdinalIgnoreCase)) continue;
                     if (process.HasExited) continue;
                     string actual = ReadImagePath(process.Id);
-                    if (String.Equals(Path.GetFullPath(actual), expected, StringComparison.OrdinalIgnoreCase))
+                    if (CodexInstall.MatchesExpectedDesktop(actual, expected))
                     {
                         matches.Add(new CodexProcessAdapter(process));
                         retained.Add(process);

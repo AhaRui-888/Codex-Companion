@@ -34,7 +34,12 @@ jobs:
         run: |
           & .\.build\Regression.exe (Join-Path $env:RUNNER_TEMP 'companion-relay-tests') --relay
           if ($LASTEXITCODE -ne 0) { throw 'Relay tests failed.' }
-      - name: Package and hash
+      - name: Verify configuration compatibility
+        shell: pwsh
+        run: |
+          & .\.build\Regression.exe (Join-Path $env:RUNNER_TEMP 'companion-configuration-tests') --configuration
+          if ($LASTEXITCODE -ne 0) { throw 'Configuration compatibility tests failed.' }
+      - name: Package release
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null

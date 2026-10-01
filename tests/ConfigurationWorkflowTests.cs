@@ -144,6 +144,7 @@ internal static class ConfigurationWorkflowTests
             controller.ApplyAsync(new UserSettings(), "sk-test-new").GetAwaiter().GetResult();
             Assert(File.ReadAllText(config).Contains(AppController.OfficialRelayUrl) && closedChecks > 0, "Apply must write the relay after verifying desktop exit.");
             Assert(Json.Read(File.ReadAllText(auth)).Count == 1, "Apply must retain only OPENAI_API_KEY.");
+            Assert(controller.HasCredential, "An explicitly saved relay key must be reusable on the next configuration.");
             CodexDesktopRestart.CloseAndWaitOverride = delegate(CancellationToken token) { closes++; };
             RestorePlan plan = controller.PrepareRestore();
             Assert(plan.ConflictingFiles.Length == 0, "A normal apply/restore cycle must not conflict.");

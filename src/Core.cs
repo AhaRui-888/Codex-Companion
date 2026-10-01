@@ -40,8 +40,8 @@ internal static class AuthFile
     {
         if (original == null || original.Length == 0) return null;
         Dictionary<string, object> root = Json.Read(PrivateFiles.Utf8.GetString(original));
-        string key = Json.Text(root, "OPEN_API_KEY");
-        return String.IsNullOrWhiteSpace(key) ? Json.Text(root, "OPENAI_API_KEY") : key;
+        string key = Json.Text(root, "OPENAI_API_KEY");
+        return String.IsNullOrWhiteSpace(key) ? Json.Text(root, "OPEN_API_KEY") : key;
     }
 }
 
@@ -50,7 +50,7 @@ public static class Json
     public static string Write(object value) { return new JavaScriptSerializer { MaxJsonLength = 8388608 }.Serialize(value); }
     public static Dictionary<string, object> Read(string value)
     {
-        var result = new JavaScriptSerializer { MaxJsonLength = 8388608 }.DeserializeObject(value) as Dictionary<string, object>;
+        var result = new JavaScriptSerializer { MaxJsonLength = 8388608 }.DeserializeObject(value.TrimStart('\uFEFF')) as Dictionary<string, object>;
         if (result == null) throw new InvalidDataException("文件不是有效的 JSON 对象。");
         return result;
     }
@@ -76,6 +76,10 @@ public static class PrivateFiles
     public static string Digest(byte[] value)
     { if (value == null) return "missing"; using (var sha = SHA256.Create()) return Convert.ToBase64String(sha.ComputeHash(value)); }
     public static void WriteAtomic(string path, byte[] content)
+    { WriteAtomicCore(path, content, null); }
+    internal static void WriteAtomicChecked(string path, byte[] content, string expectedHash)
+    { WriteAtomicCore(path, content, expectedHash); }
+    static void WriteAtomicCore(string path, byte[] content, string expectedHash)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path));
         string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -83,7 +87,27 @@ public static class PrivateFiles
         {
             using (var file = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             { file.Write(content, 0, content.Length); file.Flush(true); }
-            if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    if (expectedHash != null && Digest(ReadOptional(path)) != expectedHash)
+                        throw new IOException("配置在等待文件占用解除时发生变化，请重新操作。");
+                    if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
+                    break;
+                }
+                catch (IOException error)
+                {
+                    int code = error.HResult & 0xffff;
+                    if (attempt >= 10 || (code != 32 && code != 33 && code != 1175 && code != 1176)) throw;
+                    if (!File.Exists(temp))
+                    {
+                        if (Digest(ReadOptional(path)) == Digest(content)) break;
+                        throw;
+                    }
+                    Thread.Sleep(100);
+                }
+            }
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
@@ -123,11 +147,32 @@ public static class ChangeSet
         return new FileChange { Path = System.IO.Path.GetFullPath(path), Before = before == null ? null : Convert.ToBase64String(before),
             Desired = content, AfterHash = PrivateFiles.Digest(content) };
     }
+    internal static FileChange PrepareSnapshot(string path, byte[] content, byte[] original)
+    {
+        Check(path, PrivateFiles.Digest(original));
+        return new FileChange { Path = System.IO.Path.GetFullPath(path), Before = original == null ? null : Convert.ToBase64String(original),
+            Desired = content, AfterHash = PrivateFiles.Digest(content) };
+    }
     static byte[] Before(FileChange change) { return change.Before == null ? null : Convert.FromBase64String(change.Before); }
     static void Check(string path, string expected)
     { if (PrivateFiles.Digest(PrivateFiles.ReadOptional(path)) != expected) throw new IOException("配置已被其他程序修改，请重新操作；没有覆盖这些更改。"); }
-    static void Put(string path, byte[] bytes) { if (bytes == null) { if (File.Exists(path)) File.Delete(path); } else PrivateFiles.WriteAtomic(path, bytes); }
+    static void Put(string path, byte[] bytes, string expectedHash)
+    {
+        Check(path, expectedHash);
+        if (bytes == null) { if (File.Exists(path)) File.Delete(path); }
+        else PrivateFiles.WriteAtomicChecked(path, bytes, expectedHash);
+    }
     public static void Commit(List<FileChange> changes, string dataDirectory)
+    {
+        using (AcquireLock(dataDirectory)) CommitCore(changes, dataDirectory, true);
+    }
+    static FileStream AcquireLock(string dataDirectory)
+    {
+        PrivateFiles.EnsureDirectory(dataDirectory);
+        try { return new FileStream(System.IO.Path.Combine(dataDirectory, "configuration.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        catch (IOException error) { throw new IOException("另一个助手正在修改或恢复配置，请等待其完成后重试。", error); }
+    }
+    static void CommitCore(List<FileChange> changes, string dataDirectory, bool publishRestorePointer)
     {
         foreach (var change in changes) Check(change.Path, PrivateFiles.Digest(Before(change)));
         string backup = System.IO.Path.Combine(dataDirectory, "backups", DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff") + ".bin");
@@ -140,18 +185,26 @@ public static class ChangeSet
             foreach (var change in changes)
             {
                 Check(change.Path, PrivateFiles.Digest(Before(change)));
-                Put(change.Path, change.Desired); written.Add(change);
+                Put(change.Path, change.Desired, PrivateFiles.Digest(Before(change))); written.Add(change);
             }
-            PrivateFiles.WriteAtomic(System.IO.Path.Combine(dataDirectory, "latest-restore.bin"), protectedManifest);
+            foreach (var change in written) Check(change.Path, change.AfterHash);
+            if (publishRestorePointer)
+                PrivateFiles.WriteAtomic(System.IO.Path.Combine(dataDirectory, "latest-restore.bin"), protectedManifest);
         }
-        catch
+        catch (Exception failure)
         {
+            var rollbackFailures = new List<string>();
             foreach (var change in written.AsEnumerable().Reverse())
             {
-                if (PrivateFiles.Digest(PrivateFiles.ReadOptional(change.Path)) != change.AfterHash)
-                    throw new IOException("配置写入未完成，检测到并发改动，已保留加密备份，未覆盖外部更改。");
-                Put(change.Path, Before(change));
+                try
+                {
+                    Check(change.Path, change.AfterHash);
+                    Put(change.Path, Before(change), change.AfterHash);
+                }
+                catch { rollbackFailures.Add(System.IO.Path.GetFileName(change.Path)); }
             }
+            if (rollbackFailures.Count > 0)
+                throw new IOException("配置写入未完成，部分文件无法安全回滚：" + String.Join("、", rollbackFailures) + "。已保留加密备份，未覆盖外部更改。", failure);
             throw;
         }
     }
@@ -191,6 +244,10 @@ public static class ChangeSet
     public static void CompleteRestore(RestorePlan plan, bool overwriteConfirmed)
     {
         if (plan == null) throw new ArgumentNullException("plan");
+        using (AcquireLock(plan.DataDirectory)) CompleteRestoreCore(plan, overwriteConfirmed);
+    }
+    static void CompleteRestoreCore(RestorePlan plan, bool overwriteConfirmed)
+    {
         if (plan.Conflicts.Length > 0 && !overwriteConfirmed)
             throw new IOException("配置已被其他程序修改：" + String.Join("、", plan.Conflicts) + "。请确认后恢复。");
         string path = System.IO.Path.Combine(plan.DataDirectory, "latest-restore.bin");
@@ -198,7 +255,9 @@ public static class ChangeSet
         // Commit checks the exact inspected file snapshots again. Confirmation
         // never permits overwriting changes made after the preview was created.
         // Its encrypted backup also preserves the configuration being replaced.
-        if (plan.Changes.Count > 0) Commit(plan.Changes, plan.DataDirectory);
+        // Restoration creates a rescue backup, but retains the original
+        // pointer until deletion succeeds. A retry cannot reverse the restore.
+        if (plan.Changes.Count > 0) CommitCore(plan.Changes, plan.DataDirectory, false);
         File.Delete(path);
     }
     public static void Restore(string dataDirectory, HashSet<string> allowedPaths)
@@ -212,37 +271,38 @@ public static class CodexInstall
 
     public static string Desktop()
     {
-        string packages = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WindowsApps");
-        if (Directory.Exists(packages))
+        // Query packages registered for this user, including Store apps moved
+        // to another drive. Folder enumeration can select an obsolete package.
+        string registered = RegisteredDesktop();
+        if (registered != null) return registered;
+        foreach (string directory in new[] {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Codex"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenAI", "Codex") })
         {
-            try
-            {
-                foreach (string folder in Directory.GetDirectories(packages, "OpenAI.Codex_*").OrderByDescending(p => p))
-                {
-                    string candidate = InDirectory(Path.Combine(folder, "app"));
-                    if (candidate != null) return candidate;
-                }
-            }
-            catch (UnauthorizedAccessException) { }
+            string candidate = InDirectory(directory);
+            if (candidate != null) return candidate;
         }
-        foreach (string candidate in new[] {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Codex", "Codex.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenAI", "Codex", "Codex.exe") })
-            if (File.Exists(candidate)) return candidate;
-        // WindowsApps is often not listable without elevation; package discovery does not need it.
-        var info = new ProcessStartInfo("powershell.exe", "-NoProfile -NonInteractive -Command \"Get-AppxPackage -Name OpenAI.Codex | Select-Object -ExpandProperty InstallLocation\"")
-        { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden, RedirectStandardOutput = true, RedirectStandardError = true };
+        throw new InvalidOperationException("未找到当前用户安装的 Codex 桌面版，请先安装并启动官方 Codex 一次。");
+    }
+
+    static string RegisteredDesktop()
+    {
+        string powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+        var info = new ProcessStartInfo(powershell, "-NoProfile -NonInteractive -Command \"[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); Get-AppxPackage -Name OpenAI.Codex | Sort-Object { [version]$_.Version } -Descending | Select-Object -ExpandProperty InstallLocation\"")
+        { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
         using (var process = Process.Start(info))
         {
             var result = process.StandardOutput.ReadToEndAsync(); var errors = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(12000)) { process.Kill(); throw new InvalidOperationException("检测 Codex 安装超时。"); }
+            if (process.ExitCode != 0) throw new InvalidOperationException("无法查询当前用户的 Codex 安装包，请确认 Windows Appx 服务可用。");
             foreach (string line in result.Result.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 string candidate = InDirectory(Path.Combine(line.Trim(), "app"));
                 if (candidate != null) return candidate;
             }
         }
-        throw new InvalidOperationException("未找到 Codex 桌面版，请先安装并启动官方 Codex 一次。");
+        return null;
     }
     static string InDirectory(string directory)
     {
@@ -326,15 +386,13 @@ public static class CodexInstall
         string fullPath;
         try { fullPath = Path.GetFullPath(executable); }
         catch { return null; }
-        string windowsApps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WindowsApps") + Path.DirectorySeparatorChar;
-        if (!fullPath.StartsWith(windowsApps, StringComparison.OrdinalIgnoreCase)) return null;
-
         DirectoryInfo directory = new DirectoryInfo(Path.GetDirectoryName(fullPath));
         for (int i = 0; directory != null && i < 5; i++, directory = directory.Parent)
         {
             string name = directory.Name;
             int marker = name.IndexOf("__", StringComparison.Ordinal);
-            if (marker <= 0 || !name.StartsWith("OpenAI.Codex_", StringComparison.OrdinalIgnoreCase)) continue;
+            if (marker <= 0 || !name.StartsWith("OpenAI.Codex_", StringComparison.OrdinalIgnoreCase) ||
+                !File.Exists(Path.Combine(directory.FullName, "AppxManifest.xml"))) continue;
             string publisherId = name.Substring(marker + 2);
             string packageVersion = name.Substring(0, marker);
             int versionSeparator = packageVersion.IndexOf('_');
@@ -342,6 +400,21 @@ public static class CodexInstall
             return packageVersion.Substring(0, versionSeparator) + "_" + publisherId;
         }
         return null;
+    }
+
+    internal static bool MatchesExpectedDesktop(string actual, string expected)
+    {
+        if (String.Equals(Path.GetFullPath(actual), Path.GetFullPath(expected), StringComparison.OrdinalIgnoreCase)) return true;
+        var directory = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(actual)));
+        string name = Path.GetFileName(actual);
+        // The package also contains resources/codex.exe, a CLI/app-server.
+        // Only the desktop launchers directly under app identify a running
+        // desktop version; a standalone CLI must not block this operation.
+        if ((name.Equals("ChatGPT.exe", StringComparison.OrdinalIgnoreCase) || name.Equals("Codex.exe", StringComparison.OrdinalIgnoreCase)) &&
+            directory.Name.Equals("app", StringComparison.OrdinalIgnoreCase) && directory.Parent != null &&
+            File.Exists(Path.Combine(directory.Parent.FullName, "AppxManifest.xml")) && !String.IsNullOrEmpty(PackageFamilyName(actual)))
+            throw new InvalidOperationException("Codex 的另一安装版本仍在运行，请完全退出所有 Codex 窗口后重试；配置未修改。");
+        return false;
     }
 
     private enum ActivateOptions
@@ -367,14 +440,16 @@ public static class CodexInstall
 
     public static string Cli()
     {
+        // Prefer the CLI shipped with the registered desktop build over an
+        // extracted cache belonging to another version.
+        string bundled = Path.Combine(Path.GetDirectoryName(Desktop()), "resources", "codex.exe");
+        if (File.Exists(bundled)) return bundled;
         string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenAI", "Codex", "bin");
         if (Directory.Exists(root))
         {
             string found = Directory.GetFiles(root, "codex.exe", SearchOption.AllDirectories).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
             if (found != null) return found;
         }
-        string bundled = Path.Combine(Path.GetDirectoryName(Desktop()), "resources", "codex.exe");
-        if (File.Exists(bundled)) return bundled;
         throw new InvalidOperationException("未找到 Codex 配置服务，请先启动或更新 Codex 桌面版。");
     }
     public static void RequireClosed()
@@ -408,9 +483,18 @@ public sealed class AppController
     string StatePath { get { return Path.Combine(CodexHome, ".codex-global-state.json"); } }
     string SettingsPath { get { return Path.Combine(dataDirectory, "settings.json"); } }
     string KeyPath { get { return Path.Combine(dataDirectory, "credential.bin"); } }
-    public bool HasCredential { get { return File.Exists(KeyPath) || File.Exists(AuthPath); } }
+    public bool HasCredential
+    {
+        get
+        {
+            // A generic auth.json may belong to another provider. Only reuse
+            // a key explicitly saved by this helper for the official relay.
+            try { return File.Exists(KeyPath) && File.Exists(SettingsPath) && NormalizeUrl(Load().BaseUrl) == OfficialRelayUrl; }
+            catch { return false; }
+        }
+    }
     public AppController() : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MidWebCodex"),
-        Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex")) { }
+        ConfigurationPaths.ResolveHome(Environment.GetEnvironmentVariable("CODEX_HOME"), Environment.GetFolderPath(Environment.SpecialFolder.UserProfile))) { }
     public AppController(string dataDirectory, string codexHome)
     { this.dataDirectory = Path.GetFullPath(dataDirectory); CodexHome = Path.GetFullPath(codexHome); }
     public UserSettings Load()
@@ -421,6 +505,8 @@ public sealed class AppController
 
     string ReadStoredApiKey()
     {
+        if (!HasCredential)
+            throw new InvalidOperationException("没有为 Codex Relay 保存的 API Key，请重新输入后配置。");
         if (File.Exists(KeyPath))
         {
             byte[] plain = null;
@@ -434,8 +520,7 @@ public sealed class AppController
             finally { if (plain != null) Array.Clear(plain, 0, plain.Length); }
         }
 
-        try { return AuthFile.ReadOpenApiKey(PrivateFiles.ReadOptional(AuthPath)); }
-        catch { throw new InvalidOperationException("无法读取已保存的 auth.json，请重新输入 API Key 后配置。"); }
+        throw new InvalidOperationException("没有为 Codex Relay 保存的 API Key，请重新输入后配置。");
     }
 
     static void ValidateApiKey(string apiKey)
@@ -546,7 +631,7 @@ public sealed class AppController
         settings.Model = RelayModel;
         ThemeCatalog.Validate(settings);
         string apiKey = String.IsNullOrWhiteSpace(newApiKey) ? ReadStoredApiKey() : newApiKey.Trim();
-        if (String.IsNullOrWhiteSpace(apiKey)) throw new ArgumentException("首次配置需要填写 mid-web API Key。");
+        if (String.IsNullOrWhiteSpace(apiKey)) throw new ArgumentException("首次配置需要填写 API Key。");
         ValidateApiKey(apiKey);
         string cli = CodexInstall.Cli();
         if (settings.Pet != "keep") ThemeCatalog.CheckPetCompatibility(CodexInstall.Desktop());
@@ -557,8 +642,7 @@ public sealed class AppController
         ThemeCatalog.AddEdits(settings.Theme, edits);
         byte[] staged = CodexConfig.Stage(cli, dataDirectory, before, edits);
         var changes = new List<FileChange>();
-        var configChange = ChangeSet.Prepare(ConfigPath, staged);
-        if (PrivateFiles.Digest(before) != PrivateFiles.Digest(PrivateFiles.ReadOptional(ConfigPath))) throw new IOException("配置发生变化，请重试。");
+        var configChange = ChangeSet.PrepareSnapshot(ConfigPath, staged, before);
         changes.Add(configChange);
         changes.Add(ChangeSet.Prepare(AuthPath, AuthFile.SetOpenApiKey(apiKey)));
         if (!String.IsNullOrWhiteSpace(newApiKey))
@@ -570,7 +654,8 @@ public sealed class AppController
         if (settings.Pet != "keep")
         {
             ThemeCatalog.CheckPetCompatibility(CodexInstall.Desktop());
-            changes.Add(ChangeSet.Prepare(StatePath, ThemeCatalog.UpdatePet(PrivateFiles.ReadOptional(StatePath), settings.Pet)));
+            byte[] originalState = PrivateFiles.ReadOptional(StatePath);
+            changes.Add(ChangeSet.PrepareSnapshot(StatePath, ThemeCatalog.UpdatePet(originalState, settings.Pet), originalState));
         }
         changes.Add(ChangeSet.Prepare(SettingsPath, PrivateFiles.Utf8.GetBytes(Json.Write(settings))));
         CodexDesktopRestart.RequireClosed();

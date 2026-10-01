@@ -4,7 +4,7 @@
 
 ## 使用
 
-> 开发状态：`bin/MidWebCodex.exe` 已包含本轮 UI 更新；其中沿用的托盘退出与自动重启逻辑仍为候选实现。全量回归与配置、退出、重启隔离测试已通过；先前中文路径 staging 清理曾失败，独立诊断确认出现过共享占用，不能视为已修复。但在官方 `26.924.2738.0` 的本机检测中仍未确认可调用的退出菜单，用户也反馈没有可用托盘菜单。正在验证主界面“文件”菜单入口。本次 UI 验证没有退出或重启用户真实 Codex；以下退出/自动重启说明仍描述候选实现，完成本机验证前不要将候选构建部署为正式版。
+> 验证状态：本地 `bin/CodexCompanion.exe` 已包含配置兼容性修复，本轮修复尚未包含在已发布的 `v0.1.0` 中。使用官方 Codex `26.928.2636.0` 附带的 CLI `0.159.2` 在独立目录完成 15 项配置核心回归及新增兼容性检查，临时目录清理通过。独立退出重启测试曾通过，最终重复检查和全量运行仍出现原生托盘菜单等待超时，该问题尚未解决；未操作用户真实 Codex 验证退出。因此不能声称所有机器的自动退出均可用；无法确认退出时助手会拒绝写入，可手动从 Codex 文件菜单退出后重试。具体范围见 [CONFIGURATION-AUDIT.md](CONFIGURATION-AUDIT.md)。
 
 1. 先安装并启动一次官方 Codex 桌面版，配置或恢复前先保存正在进行的工作。
 2. 双击 `bin/CodexCompanion.exe`，无需安装 Node.js、Python 或其他运行时。
@@ -14,7 +14,7 @@
 
 助手启动后会从 `https://xai-tools.cn/api/advertisements/companion` 拉取 mid-web 广告管理中的启用广告，并每分钟刷新。单条广告显示宣传栏和详情入口；多条广告按后台排序每 6 秒横向滑动切换，也可使用左右按钮、方向键或滚轮切换，悬停、聚焦或查看详情时暂停自动轮播。没有广告或服务暂时不可用时隐藏宣传栏并恢复布局，下次刷新继续重试。宣传栏显示时下方内容自动下移并调整窗口高度；屏幕空间不足时可滚动查看。广告内容不携带本机 API Key，也不会写入本地配置。
 
-再次配置时，API Key 留空可保留本机已加密保存的密钥。点击“一键配置”或“恢复上次配置”会确认官方 Codex EXE；若界面已关闭但进程仍在后台，会调用该官方进程的托盘左键回调恢复主窗口（官方包激活作为后备），再仅按固定控件 ID 调用“文件”菜单最后一项官方“退出”，等待进程全部退出（最多 30 秒）。旧版客户端仍保留托盘退出菜单兼容路径。此流程不发送快捷键，不读取聊天控件，不修改 Codex 的托盘设置，不强制结束进程；若出现官方退出确认，请自行确认。退出项无法唯一确认、被禁用、取消退出、超时或操作期间重新启动时，配置保持不变。
+再次配置时，API Key 留空可保留本工具为 Codex Relay 在本机显式保存的加密密钥；不会复用其他 provider 或 ChatGPT 的登录信息。点击“一键配置”或“恢复上次配置”会确认官方 Codex EXE；若界面已关闭但进程仍在后台，会调用该官方进程的托盘左键回调恢复主窗口（官方包激活作为后备），再仅按固定控件 ID 调用“文件”菜单最后一项官方“退出”，等待进程全部退出（最多 30 秒）。旧版客户端仍保留托盘退出菜单兼容路径。此流程不发送快捷键，不读取聊天控件，不修改 Codex 的托盘设置，不强制结束进程；若出现官方退出确认，请自行确认。退出项无法唯一确认、被禁用、取消退出、超时或操作期间重新启动时，配置保持不变。
 
 “一键配置”只有在配置保存成功后才自动打开 Codex。退出或配置失败不会执行启动；如果配置已保存但启动失败，会单独提示“配置已保存，但 Codex 重新启动失败”，可点击“打开 Codex”重试。恢复上次配置后仍可手动点击“打开 Codex”。托盘菜单调用使用 Windows 自带的 UI Automation 程序集，无需安装额外依赖。
 
@@ -56,8 +56,8 @@ QQ 模式必须由本工具“打开 Codex”，才会为该次运行启用 loop
 - 连接使用 `model_provider = "custom"`，provider 名称为 `Codex Relay`，使用 Responses 协议和 `experimental_bearer_token`。
 - API Key 写入 Codex `auth.json` 和 `config.toml`，并额外通过 Windows DPAPI 加密保存；不会写入日志或环境变量。
 - 用户数据保存在 `%LOCALAPPDATA%/MidWebCodex`；备份也使用当前 Windows 用户的 DPAPI 加密，不能直接搬到其他账号或电脑使用。
-- Codex 配置目录尊重当前进程的 `CODEX_HOME`，没有设置时使用用户目录的 `.codex`。
-- 写入前使用已安装的 Codex `app-server config/batchWrite` 在独立临时目录进行 TOML 修改与校验，再备份并替换正式配置；`auth.json` 与配置文件使用同一份加密备份清单。保留其他 provider、MCP、权限、项目、注释等设置。
+- Codex 配置目录尊重当前进程的绝对 `CODEX_HOME`；未设置、为空或空白时使用当前 Windows 用户目录的 `.codex`。相对路径会拒绝配置，避免误写启动目录。
+- 写入前使用当前用户注册的 Codex 桌面版所附 `app-server config/batchWrite` 在独立临时目录进行 TOML 修改，重载后逐项校验目标用户层与服务返回的有效值，再备份并替换正式配置；`auth.json` 与配置文件使用同一份加密备份清单。保留其他 provider、MCP、权限、项目、注释等设置。工具修改用户默认配置；项目配置和显式 profile 可能覆盖这些默认值。
 - 宠物只合并 `.codex-global-state.json` 中 `electron-persisted-atom-state.selected-avatar-id`，保留其他字段。
 - “恢复上次配置”还原最近一次一键配置前的内容。若用户或 Codex 已改动文件，会列出冲突文件名并要求确认；取消不修改配置。确认后先将当前内容加密备份到数据目录的 `backups`，再还原旧文件（包含旧登录信息）。确认期间再次改动配置或生成新备份会拒绝写入，原备份仍可重试。本工具当时未改动或已还原的文件会跳过，不覆盖之后的无关更改。
 - 使用独立 profile、受组织强制管理或较旧且缺少配置服务的 Codex，可能拒绝自动配置；工具不会删除管理规则来绕过限制。
@@ -81,6 +81,8 @@ powershell -NoProfile -File .\build.ps1 -Test
 
 配置服务通过无 BOM 的 UTF-8 管道通信，支持中文 Windows 用户名和目录。回归测试覆盖“睿睿睿”路径、中文及其他 Unicode 配置值，并检查服务退出后的 staging 清理。
 
+跨机器兼容性修复与实际验证边界见 [CONFIGURATION-AUDIT.md](CONFIGURATION-AUDIT.md)。配置核心复核：`powershell -NoProfile -File .\build.ps1 -Test -TestSuite core`。不依赖已安装 Codex 的兼容性套件：`-TestSuite configuration`。
+
 界面截图验证入口：
 
 ```powershell
@@ -93,7 +95,7 @@ powershell -NoProfile -File .\build.ps1 -Test
 
 首次安装从 [GitHub Releases](https://github.com/AhaRui-888/Codex-Companion/releases) 下载 `CodexCompanion-Windows.zip`，解压到可写目录并运行 `CodexCompanion.exe`。程序启动时会在后台检查公开的最新稳定版本；顶部“检查更新”也可手动触发。新版 EXE 下载并通过同一 Release 中的 SHA-256 校验后，按钮变为“重启并更新”。点击后助手退出，独立更新程序替换 EXE 并重新打开助手。失败时保留或恢复旧 EXE，不修改 Codex 配置、密钥或主题图库。若安装目录不可写，更新会失败；请将便携包解压到当前用户可写目录。
 
-发布时先更新 `version.txt` 为 `major.minor.patch`，提交并推送代码，然后推送同版本的 `vmajor.minor.patch` 标签。GitHub Actions 在 Windows 上构建并运行更新校验与中转契约测试，生成 EXE、`CodexCompanion.exe.sha256` 和便携 ZIP，并上传 Release。UI 测试需要交互式 Windows 桌面，在本地运行。`assets/theme-gallery` 中的第三方二进制包与预览文件不进入源码仓库及便携包；在线主题图库仍可按需下载，已有本地图库不会被自动更新删除。
+发布时先更新 `version.txt` 为 `major.minor.patch`，提交并推送代码，然后推送同版本的 `vmajor.minor.patch` 标签。GitHub Actions 在 Windows 上构建并运行更新校验、中转契约与配置兼容性测试，生成 EXE、`CodexCompanion.exe.sha256` 和便携 ZIP，并上传 Release。UI 测试需要交互式 Windows 桌面，在本地运行。`assets/theme-gallery` 中的第三方二进制包与预览文件不进入源码仓库及便携包；在线主题图库仍可按需下载，已有本地图库不会被自动更新删除。
 
 ```powershell
 powershell -NoProfile -File .\build.ps1 -Test -TestSuite update
