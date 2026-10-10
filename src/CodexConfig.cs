@@ -145,9 +145,9 @@ public static class CodexConfig
         // Codex may release inherited handles a moment after its process exits.
         // Retry briefly so a transient Windows lock cannot turn a successful
         // configuration write into a user-visible failure.
-        // Unicode CODEX_HOME paths can take longer for the app-server child and
-        // its redirected stream handles to release on Windows. Keep the
-        // cleanup bounded, but give those handles up to 15 seconds to close.
+        // Windows can retain a lock after the configuration child exits.
+        // Allow up to 15 seconds for this owned scratch directory to become
+        // deletable; cleanup remains best-effort if a lock persists.
         for (int attempt = 0; attempt < 150; attempt++)
         {
             try
