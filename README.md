@@ -8,7 +8,7 @@
 
 ## 使用
 
-> 当前验证（2026-10-10）：默认 `bin/CodexCompanion.exe` 已重新构建，全量隔离回归通过，包含配置恢复、更新并发、图库滚动与缓存释放、广告及 UI 检查。本轮没有修改真实 Codex 配置，也没有退出或重启用户真实 Codex；真实客户端退出、重启与模型通信仍需实机验证。
+> 当前验证（2026-10-10）：默认 `bin/CodexCompanion.exe` 已重新构建，全量隔离回归通过，包含账户协议、会话轮换与加密、配置恢复、更新并发、图库滚动与缓存释放、广告及窗口适配检查。官方登录弹窗已验证可加载登录表单；账户成功登录和余额测试使用模拟响应，真实账户需由用户自行登录验证。本轮没有修改真实 Codex 配置，也没有退出或重启用户真实 Codex。
 
 1. 先安装并启动一次官方 Codex 桌面版，配置或恢复前先保存正在进行的工作。
 2. 双击 `bin/CodexCompanion.exe`，无需安装 Node.js、Python 或其他运行时。若从源码启动，在项目根目录运行：
@@ -18,10 +18,10 @@
    Start-Process .\bin\CodexCompanion.exe
    ```
 
-   `build.ps1` 使用 Windows 自带的 .NET Framework 4.x 编译器；广告 HTTPS 功能需要 .NET Framework 4.7.2 或更高版本。`-ExecutionPolicy Bypass` 仅作用于这次 PowerShell 进程，用于系统禁止运行脚本的情况。
-3. 输入平台 API Key。点击“一键配置”后，程序仅更新 `config.toml` 的 `Codex Relay` provider，保留 `auth.json` 中的 ChatGPT 登录信息和 `.codex-global-state.json`。
-4. 点击“一键配置”保存中转配置（`model` 固定为 `gpt-5.6-sol`），成功后自动打开 Codex。外观通过“外观设置”独立弹窗调整：在“外观偏好”页选择主题和皮肤，点击“保存并重启 Codex”；在“主题图库”页浏览和应用图库主题。外观保存不需要 API Key，也不改动中转配置。Codex 已关闭界面但仍在后台运行时，助手会先通过官方托盘回调恢复主窗口，再调用“文件 → 退出”。
-5. 点击“充值中心”会在系统浏览器打开 `https://xai-tools.cn/#recharge`；登录后直接进入 Codex Relay 充值页。点击“官方网站”会打开 `https://xai-tools.cn`。
+   `build.ps1` 使用 Windows 自带的 .NET Framework 4.x 编译器，应用需要 .NET Framework 4.7.2 或更高版本。首次构建会从 NuGet 下载固定版本 Microsoft WebView2 SDK 并验证 SHA-512，之后使用本机缓存。登录弹窗需要 Microsoft Edge WebView2 Evergreen Runtime；缺少时弹窗会提供微软官方下载入口。`-ExecutionPolicy Bypass` 仅作用于这次 PowerShell 进程，用于系统禁止运行脚本的情况。
+3. 点击账户栏“登录”，在弹出的 xai-tools.cn 官方页面完成登录，即可查看可用余额；网页登录与中转 API Key 独立。
+4. 输入平台 API Key，点击“配置并启动”保存中转配置（`model` 固定为 `gpt-5.6-sol`），成功后自动打开 Codex。程序仅更新 `config.toml` 的 `Codex Relay` provider，保留 `auth.json` 中的 ChatGPT 登录信息和 `.codex-global-state.json`。外观通过“主题选择”独立弹窗调整：在“外观偏好”页选择主题和皮肤，点击“保存并重启 Codex”；在“主题图库”页浏览和应用图库主题。外观保存不需要 API Key，也不改动中转配置。Codex 已关闭界面但仍在后台运行时，助手会先通过官方托盘回调恢复主窗口，再调用“文件 → 退出”。
+5. 点击“充值中心”会在系统浏览器打开 `https://xai-tools.cn/#recharge`；登录后直接进入 Codex Relay 充值页。点击“官网”会打开 `https://xai-tools.cn`。
 
 助手启动后会从 `https://xai-tools.cn/api/advertisements/companion` 拉取 mid-web 广告管理中的启用广告，并每分钟刷新。单条广告显示宣传栏和详情入口；多条广告按后台排序每 6 秒横向滑动切换，也可使用左右按钮、方向键或滚轮切换，悬停、聚焦或查看详情时暂停自动轮播。没有广告或服务暂时不可用时隐藏宣传栏并恢复布局，下次刷新继续重试。宣传栏显示时下方内容自动下移并调整窗口高度；屏幕空间不足时可滚动查看。广告内容不携带本机 API Key，也不会写入本地配置。
 
@@ -51,7 +51,9 @@ experimental_bearer_token = "<输入的 API Key>"
 
 ## 外观
 
-助手自身界面已对齐 `mid_web/apps/web/src/visual-polish.css` 的深色薄荷配色：双栏连接与外观工作区、圆角卡片、明确的主操作、原生键盘下拉选择、主题配色示意及统一的图库和广告样式。修改仅涉及表现层，API 中转地址、模型 ID、密钥保存、配置/恢复、广告请求与启动流程保持原有逻辑。截图与验证说明见 [UI-REFRESH.md](UI-REFRESH.md)。
+主窗口支持调整大小和最大化。窄窗口将顶部入口与次要操作重新排布，宽窗口限制内容列宽度并居中，高窗口适度居中内容，矮窗口使用纵向滚动保留所有操作。控件字号保持稳定，状态消息根据可用宽度换行。
+
+助手采用浅色蓝白界面，网站账户、余额与连接配置分别呈现，外观设置使用独立弹窗。窗口根据可用空间重新排布，保留原生键盘下拉选择、主题预览和图库操作。截图与验证说明见 [UI-REFRESH.md](UI-REFRESH.md)。
 
 - 原生主题：保持当前、跟随系统、Codex 浅色/深色、Catppuccin、Dracula、Nord、Forest。应用到 Codex 本体的 `desktop.appearance*` 设置。
 - QQ 风格：自有蓝银面板皮肤，参考 Codex-QQ-Skin 的本机样式注入思路；不是原项目的完整移植。保留 Codex 原生布局与操作，不包含其成长统计、音效、图片生成皮肤等额外功能。
@@ -60,6 +62,14 @@ experimental_bearer_token = "<输入的 API Key>"
 QQ 模式必须由本工具“打开 Codex”，才会为该次运行启用 loopback 调试端口和皮肤宿主。成功提示以页面样式实际注入为条件。客户端更新造成页面结构不兼容时会报错；可以退出 Codex、选择原生界面并重新配置。
 
 原生主题字段从本机 Codex `26.915.4065.0` 静态实现核实。
+
+## 网站账户与余额
+
+点击主窗口的“登录”，在独立弹窗中的 `https://xai-tools.cn/#recharge` 官方页面完成登录。网页登录支持网站当前的邮箱或手机号账户；助手不自行收集密码。验证用户身份后，助手读取钱包，显示人民币可用余额（总余额减预留金额），每分钟自动刷新，也可点击“刷新余额”。金额显示两位小数，悬停可查看六位小数的微元精度；网络失败时保留上次余额并标明刷新失败，不把失败显示为零余额。
+
+网页登录会话与中转 API Key、Codex 登录相互独立。网页登录 Cookie 使用当前 Windows 用户的 DPAPI 加密保存在 `%LOCALAPPDATA%/MidWebCodex/website-account/website-session.bin`；启动后验证已有会话，并在会话过期时单次刷新及保存轮换后的 Cookie。会话被撤销时要求重新登录。“退出登录”清除助手的本机会话，并向网站撤销该会话；网络不可用时会明确提示网站会话未能撤销。登录弹窗使用临时独立的 WebView2 无痕配置，关闭后清除 Cookie 和浏览器资料，不读取系统浏览器中的登录信息。普通运行仅允许一个助手窗口拥有账户会话，避免刷新凭证被多个进程重复使用。
+
+登录使用 Microsoft 官方 WebView2 SDK（版本固定为 `1.0.4258.31`），托管库和 x86/x64 加载器嵌入主 EXE，便携包及仅更新 EXE 的自动更新流程均可使用。账户协议测试使用虚构 Cookie 和模拟 HTTPS 响应，可运行 `powershell -NoProfile -File .\build.ps1 -Test -TestSuite account`。
 
 ## 配置边界与恢复
 
@@ -76,7 +86,7 @@ QQ 皮肤仅连接本机 `127.0.0.1` 端口，校验页面地址和 Codex DOM �
 
 ## 构建与验证
 
-使用 Windows 自带 .NET Framework C# 编译器，不下载依赖；广告 HTTPS 请求需要 .NET Framework 4.7.2 或更高版本。广告客户端独立启用 TLS 1.2，保留正常证书校验，不修改系统或其他请求的 TLS 设置。加载失败会在空闲状态栏提示，并在下次定时刷新重试。
+使用 Windows 自带 .NET Framework C# 编译器。首次构建会下载并校验固定版本的 WebView2 SDK，后续使用缓存；正式运行无需 Node.js 或 Python。广告及账户 HTTPS 客户端独立启用 TLS 1.2，保留正常证书校验。广告加载失败会在空闲状态栏提示，并在下次定时刷新重试。
 
 ```powershell
 powershell -NoProfile -File .\build.ps1
@@ -103,7 +113,7 @@ powershell -NoProfile -File .\build.ps1 -Test
 
 首次安装从 [GitHub Releases](https://github.com/AhaRui-888/Codex-Companion/releases) 下载 `CodexCompanion-Windows.zip`，解压到可写目录并运行 `CodexCompanion.exe`。程序启动时会在后台检查公开的最新稳定版本；顶部“检查更新”也可手动触发。GitHub API 暂时不可用或达到限额时，程序会通过同一仓库的 Releases 最新版本页面继续检查。新版 EXE 下载并通过同一 Release 中的 SHA-256 校验后，按钮变为“重启并更新”。点击后助手退出，独立更新程序替换 EXE 并重新打开助手。失败时保留或恢复旧 EXE，不修改 Codex 配置、密钥或主题图库。若安装目录不可写，更新会失败；请将便携包解压到当前用户可写目录。
 
-发布时先更新 `version.txt` 为 `major.minor.patch`，提交并推送代码，然后推送同版本的 `vmajor.minor.patch` 标签。GitHub Actions 在 Windows 上构建并运行更新校验与中转契约测试，生成 EXE、`CodexCompanion.exe.sha256` 和便携 ZIP，并上传 Release。UI 测试需要交互式 Windows 桌面，在本地运行。`assets/theme-gallery` 中的第三方二进制包与预览文件不进入源码仓库及便携包；在线主题图库仍可按需下载，已有本地图库不会被自动更新删除。
+发布时先更新 `version.txt` 为 `major.minor.patch`，提交并推送代码，然后推送同版本的 `vmajor.minor.patch` 标签。GitHub Actions 在 Windows 上构建并运行更新校验、账户协议与中转契约测试，生成 EXE、`CodexCompanion.exe.sha256` 和便携 ZIP，并上传 Release。UI 测试需要交互式 Windows 桌面，在本地运行。`assets/theme-gallery` 中的第三方二进制包与预览文件不进入源码仓库及便携包；在线主题图库仍可按需下载，已有本地图库不会被自动更新删除。
 
 ```powershell
 powershell -NoProfile -File .\build.ps1 -Test -TestSuite update -Package

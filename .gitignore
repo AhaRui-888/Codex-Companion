@@ -1,5 +1,6 @@
 .build/
 .build-check/
+.dependencies/
 bin/
 dist/
 *.user

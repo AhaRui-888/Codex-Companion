@@ -94,9 +94,14 @@ internal static class NativeQuitTests
             exit.Click += delegate { receivedQuit = true; };
             Task<bool> quit = Task.Run(() => CodexDesktopQuit.RequestQuit(window, processId, new CodexDesktopQuit()));
             var timer = Stopwatch.StartNew();
-            while ((!quit.IsCompleted || (expected && !receivedQuit)) && timer.ElapsedMilliseconds < 9000)
+            // An unrecognized popup can scan 32 icon batches at 300 ms each,
+            // followed by accessibility discovery. The fixture must allow that
+            // bounded production path to finish before checking its result.
+            const int requestWaitMilliseconds = 20000;
+            while ((!quit.IsCompleted || (expected && !receivedQuit)) && timer.ElapsedMilliseconds < requestWaitMilliseconds)
             { Application.DoEvents(); Thread.Sleep(10); }
-            Assert(quit.IsCompleted, "Tray request must finish within its bounded wait.");
+            Assert(quit.IsCompleted, "Tray request must finish within its bounded wait: " + finalLabel +
+                "; requested=" + menuRequests + "; observations=" + String.Join(" / ", observations));
             bool result = quit.GetAwaiter().GetResult();
             Application.DoEvents();
             Assert(result == expected && receivedQuit == expected, "Only an enabled official final exit item may be invoked: " + finalLabel +

@@ -45,10 +45,33 @@ internal static class DesktopUiTests
             Call(form, "SetStatus", "界面效果预览 · 使用隔离测试数据，未执行配置或模型调用。");
             CheckLayout(form);
             SaveClient(form, Path.Combine(root, "desktop-default.png"));
+            var account = Field<AccountPanel>(form, "accountPanel");
+            Assert(Field<Button>(account, "loginButton").Visible && !Field<Button>(account, "loginButton").Enabled,
+                "Signed-out preview must show login without opening a real login session.");
+            account.SetPreviewSnapshot(new AccountSnapshot { AccountName = "fixture@example.test", UserId = "fixture-user",
+                Balance = 123.456789M, Reserved = 2.345678M, UpdatedAt = new DateTime(2026, 10, 10, 12, 30, 0) });
+            Application.DoEvents();
+            CheckLayout(form);
+            SaveClient(form, Path.Combine(root, "desktop-account.png"));
+            float fixedFontSize = apply.Font.Size;
             form.Size = form.MinimumSize;
             Application.DoEvents();
             CheckLayout(form);
             SaveClient(form, Path.Combine(root, "desktop-minimum.png"));
+            var viewport = Field<Panel>(form, "layoutViewport");
+            Assert(Field<bool>(form, "compactHeader") && Field<bool>(form, "compactActions"),
+                "Narrow windows must move header links and secondary actions to their own rows.");
+            Assert(viewport.VerticalScroll.Visible, "Short narrow windows must offer native scrolling for every action.");
+            viewport.ScrollControlIntoView(Field<Button>(form, "restoreButton"));
+            Application.DoEvents();
+            Assert(form.ClientRectangle.Contains(form.RectangleToClient(Field<Button>(form, "restoreButton").RectangleToScreen(Field<Button>(form, "restoreButton").ClientRectangle))),
+                "Restore must remain reachable through the short window's scrollbar.");
+            SaveClient(form, Path.Combine(root, "desktop-short-scrolled.png"));
+            form.ClientSize = new Size(660, 700);
+            Application.DoEvents();
+            CheckLayout(form);
+            Assert(!viewport.VerticalScroll.Visible, "A tall narrow window must fit the reflowed controls without scrolling.");
+            SaveClient(form, Path.Combine(root, "desktop-narrow.png"));
             form.SetAdvertisements(new[] { new Advertisement("平台推广 · 支持长内容、键盘切换和独立详情。", AppController.OfficialWebsiteUrl) });
             Application.DoEvents();
             CheckLayout(form);
@@ -58,6 +81,20 @@ internal static class DesktopUiTests
             Application.DoEvents();
             CheckLayout(form);
             SaveClient(form, Path.Combine(root, "desktop-expanded.png"));
+            var content = Field<TableLayoutPanel>(form, "rootLayout");
+            Assert(content.Top > 120 && Math.Abs(content.Top - (viewport.Height - content.Bottom)) <= 2,
+                "Tall windows must balance space around the complete content group instead of expanding a blank status row.");
+            form.ClientSize = new Size(1600, 900);
+            Application.DoEvents();
+            CheckLayout(form);
+            Assert(content.Width <= 1230 && Math.Abs(content.Left - (viewport.Width - content.Right)) <= 2,
+                "Wide windows must preserve a centered readable content column.");
+            Assert(apply.Font.Size == fixedFontSize, "Resizing the window must preserve readable fixed font sizes.");
+            SaveClient(form, Path.Combine(root, "desktop-wide.png"));
+            Call(form, "SetStatus", "配置失败：" + new string('文', 140));
+            Application.DoEvents();
+            Assert(Field<Label>(form, "statusLabel").Height > 60, "Long operation messages must grow and wrap rather than being clipped.");
+            CheckLayout(form);
             Assert(!Directory.Exists(data) && !Directory.Exists(codex), "UI-only interactions must not write configuration.");
             form.Close();
         }
@@ -106,12 +143,18 @@ internal static class DesktopUiTests
 
     private static void CheckLayout(MainForm form)
     {
+        var root = Field<TableLayoutPanel>(form, "rootLayout");
+        var viewport = Field<Panel>(form, "layoutViewport");
         foreach (string field in new[] { "apiKeyTextBox", "eyeButton", "appearanceButton", "applyButton", "openCodexButton", "restoreButton", "officialWebsiteButton", "rechargeButton", "updateButton" })
         {
             var control = Field<Control>(form, field);
             Assert(control.Visible && control.Width > 24 && control.Height >= 18, field + " must remain visible and usable.");
-            Rectangle bounds = form.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
-            Assert(form.ClientRectangle.Contains(bounds), field + " must not be clipped at the current window size.");
+            Rectangle bounds = root.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
+            Assert(root.ClientRectangle.Contains(bounds), field + " must fit the content at the current window size.");
+            Assert(control.Parent.ClientRectangle.Contains(control.Bounds), field + " must not be clipped by its parent.");
+            if (!viewport.VerticalScroll.Visible)
+                Assert(form.ClientRectangle.Contains(form.RectangleToClient(control.RectangleToScreen(control.ClientRectangle))),
+                    field + " must be visible without scrolling when the content fits.");
             if (control is DesktopButton)
             {
                 using (var graphics = control.CreateGraphics())
@@ -144,9 +187,27 @@ internal static class DesktopUiTests
         Rectangle updateBounds = form.RectangleToClient(Field<Button>(form, "updateButton").RectangleToScreen(Field<Button>(form, "updateButton").ClientRectangle));
         Assert(Math.Abs(appearanceBounds.Top - updateBounds.Top) <= 2 && appearanceBounds.Bottom < keyBounds.Top,
             "Appearance settings must stay in the top action bar.");
-        var root = Field<TableLayoutPanel>(form, "rootLayout");
-        Assert(!root.HorizontalScroll.Visible, "Supported sizes must not need horizontal scrolling.");
-        Assert(!root.VerticalScroll.Visible, "Minimum and advertisement layouts must fit without vertical scrolling.");
+        Assert(!viewport.HorizontalScroll.Visible, "Supported sizes must not need horizontal scrolling.");
+        Rectangle brandBounds = root.RectangleToClient(brands[0].RectangleToScreen(brands[0].ClientRectangle));
+        Rectangle domainBounds = root.RectangleToClient(domain.RectangleToScreen(domain.ClientRectangle));
+        Rectangle headerActionBounds = root.RectangleToClient(Field<Button>(form, "appearanceButton").RectangleToScreen(Field<Button>(form, "appearanceButton").ClientRectangle));
+        Assert(!brandBounds.IntersectsWith(domainBounds) && !brandBounds.IntersectsWith(headerActionBounds) && !domainBounds.IntersectsWith(headerActionBounds),
+            "Header branding, domain and actions must never overlap.");
+        var hint = Field<Label>(form, "credentialHintLabel");
+        using (var graphics = hint.CreateGraphics())
+            Assert(graphics.MeasureString(hint.Text, hint.Font, hint.Width - hint.Padding.Horizontal).Height <= hint.Height - hint.Padding.Vertical + 1,
+                "Credential guidance must have enough height to wrap at narrow widths.");
+        var account = Field<AccountPanel>(form, "accountPanel");
+        foreach (string field in new[] { "balanceLabel", "accountLabel", "accountStatusLabel", "loginButton", "refreshBalanceButton", "logoutButton" })
+        {
+            var control = Field<Control>(account, field);
+            if (!control.Visible) continue;
+            Assert(account.ClientRectangle.Contains(control.Bounds), "Account " + field + " must fit its panel at every supported width.");
+            if (control is Button)
+                using (var graphics = control.CreateGraphics())
+                    Assert(graphics.MeasureString(control.Text, control.Font).Width <= control.Width - 12,
+                        "Account " + field + " must retain its complete action label.");
+        }
     }
     private static void CheckAppearanceLayout(ThemeGalleryForm form)
     {

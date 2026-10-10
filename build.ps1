@@ -3,13 +3,63 @@ param(
     [switch]$Package,
     [string]$OutputDirectory = '',
     [string]$IntermediateDirectory = '',
-    [ValidateSet('all', 'ui', 'advertisements', 'gallery', 'restart', 'update', 'relay')]
+    [ValidateSet('all', 'ui', 'advertisements', 'gallery', 'restart', 'update', 'relay', 'account')]
     [string]$TestSuite = 'all'
 )
 $ErrorActionPreference = 'Stop'
 $taskRoot = $PSScriptRoot
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (!(Test-Path -LiteralPath $compiler)) { throw 'Windows .NET Framework 4.x is required.' }
+# Pin the official SDK and verify the complete NuGet package before extracting
+# the four redistributable files. Build artifacts stay out of source control.
+$webViewVersion = '1.0.4258.31'
+$webViewPackageHash = 'HlGVwvyP/IWiXAU8K57Vmg59khY3DWMOxMnH4AHusFRy0/vDAjKItXUIVNXiXXaq4CLfSZyNUic1wOIlnPLsPQ=='
+$webViewDependency = Join-Path $taskRoot ('.dependencies\webview2\' + $webViewVersion)
+$webViewPackage = Join-Path $webViewDependency 'sdk.nupkg'
+New-Item -ItemType Directory -Force -Path $webViewDependency | Out-Null
+function Test-WebViewPackage([string]$Path) {
+    $taskHasher = [Security.Cryptography.SHA512]::Create()
+    $taskStream = [IO.File]::OpenRead($Path)
+    try { return [Convert]::ToBase64String($taskHasher.ComputeHash($taskStream)) -ceq $webViewPackageHash }
+    finally { $taskStream.Dispose(); $taskHasher.Dispose() }
+}
+if (!(Test-Path -LiteralPath $webViewPackage)) {
+    $webViewDownload = Join-Path $webViewDependency ('sdk.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $taskProtocol = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = $taskProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $webViewPackageUrl = 'https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/' + $webViewVersion + '/microsoft.web.webview2.' + $webViewVersion + '.nupkg'
+        Invoke-WebRequest -UseBasicParsing -Uri $webViewPackageUrl -OutFile $webViewDownload
+        if (!(Test-WebViewPackage $webViewDownload)) { throw 'Downloaded WebView2 SDK package failed its pinned SHA-512 check.' }
+        Move-Item -LiteralPath $webViewDownload -Destination $webViewPackage
+    }
+    finally {
+        [Net.ServicePointManager]::SecurityProtocol = $taskProtocol
+        if (Test-Path -LiteralPath $webViewDownload) { Remove-Item -LiteralPath $webViewDownload -Force }
+    }
+}
+if (!(Test-WebViewPackage $webViewPackage)) {
+    throw ('Cached WebView2 SDK package failed its pinned SHA-512 check. Remove only this file and rebuild: ' + $webViewPackage)
+}
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$webViewFiles = @{
+    'Microsoft.Web.WebView2.Core.dll' = 'lib/net462/Microsoft.Web.WebView2.Core.dll'
+    'Microsoft.Web.WebView2.WinForms.dll' = 'lib/net462/Microsoft.Web.WebView2.WinForms.dll'
+    'WebView2Loader.x86.dll' = 'runtimes/win-x86/native/WebView2Loader.dll'
+    'WebView2Loader.x64.dll' = 'runtimes/win-x64/native/WebView2Loader.dll'
+}
+$webViewArchive = [IO.Compression.ZipFile]::OpenRead($webViewPackage)
+try {
+    foreach ($webViewFile in $webViewFiles.GetEnumerator()) {
+        $webViewEntry = $webViewArchive.GetEntry($webViewFile.Value)
+        if ($null -eq $webViewEntry) { throw ('Pinned SDK is missing: ' + $webViewFile.Value) }
+        $webViewSource = $webViewEntry.Open()
+        $webViewTarget = [IO.File]::Open((Join-Path $webViewDependency $webViewFile.Key), [IO.FileMode]::Create, [IO.FileAccess]::Write)
+        try { $webViewSource.CopyTo($webViewTarget) }
+        finally { $webViewTarget.Dispose(); $webViewSource.Dispose() }
+    }
+}
+finally { $webViewArchive.Dispose() }
 $intermediate = if ([String]::IsNullOrWhiteSpace($IntermediateDirectory)) {
     Join-Path $taskRoot '.build'
 } elseif ([IO.Path]::IsPathRooted($IntermediateDirectory)) {
@@ -41,11 +91,17 @@ if ($LASTEXITCODE -ne 0) { throw 'Updater compilation failed.' }
 $sources = Get-ChildItem -LiteralPath (Join-Path $taskRoot 'src') -Filter '*.cs' | Where-Object { $_.Name -ne 'UpdaterProgram.cs' } | Select-Object -ExpandProperty FullName
 $sources += $versionSource
 $references = @('/r:System.Windows.Forms.dll','/r:System.Drawing.dll','/r:System.Net.Http.dll','/r:System.Web.Extensions.dll','/r:System.Security.dll')
+$references += '/r:' + (Join-Path $webViewDependency 'Microsoft.Web.WebView2.Core.dll')
+$references += '/r:' + (Join-Path $webViewDependency 'Microsoft.Web.WebView2.WinForms.dll')
 $framework = Split-Path $compiler
 foreach ($assembly in @('UIAutomationClient.dll','UIAutomationTypes.dll','WindowsBase.dll')) {
     $references += '/r:' + (Join-Path $framework ('WPF\' + $assembly))
 }
 $resources = @("/resource:$updater,CodexCompanionUpdater.exe", "/resource:$(Join-Path $taskRoot 'assets\qq-skin.css'),qq-skin.css")
+$resources += '/resource:' + (Join-Path $webViewDependency 'Microsoft.Web.WebView2.Core.dll') + ',WebView2.Microsoft.Web.WebView2.Core.dll'
+$resources += '/resource:' + (Join-Path $webViewDependency 'Microsoft.Web.WebView2.WinForms.dll') + ',WebView2.Microsoft.Web.WebView2.WinForms.dll'
+$resources += '/resource:' + (Join-Path $webViewDependency 'WebView2Loader.x86.dll') + ',WebView2.Loader.x86'
+$resources += '/resource:' + (Join-Path $webViewDependency 'WebView2Loader.x64.dll') + ',WebView2.Loader.x64'
 $executable = Join-Path $output 'CodexCompanion.exe'
 & $compiler /nologo /target:winexe /optimize+ /platform:anycpu /langversion:5 "/win32manifest:$(Join-Path $taskRoot 'app.manifest')" "/win32icon:$(Join-Path $taskRoot 'assets\codex-companion.ico')" "/out:$executable" @references @resources @sources
 if ($LASTEXITCODE -ne 0) { throw 'Application compilation failed.' }

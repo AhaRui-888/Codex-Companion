@@ -20,7 +20,12 @@ public class MainForm : Form
     private readonly Color textColor = Color.FromArgb(35, 48, 68);
     private readonly Color mutedColor = Color.FromArgb(104, 117, 138);
     private readonly Color borderColor = Color.FromArgb(224, 230, 239);
-    private const int BaseClientHeight = 246;
+    private const int BaseClientHeight = 336;
+    private const int MaximumContentWidth = 820;
+    private const int MinimumClientWidth = 440;
+    private const int AdvertisementRow = 2;
+    private const int ConnectionRow = 3;
+    private const int StatusRow = 4;
     private const float PreviewScale = 1.5F;
 
     private TextBox apiKeyTextBox;
@@ -36,6 +41,20 @@ public class MainForm : Form
     private Button updateButton;
     private Button eyeButton;
     private TableLayoutPanel rootLayout;
+    private AccountPanel accountPanel;
+    private Panel layoutViewport;
+    private Panel headerPanel;
+    private Label brandLabel;
+    private Label endpointAddress;
+    private FlowLayoutPanel headerLinks;
+    private TableLayoutPanel connectionLayout;
+    private Control connectionPanel;
+    private Panel connectionActions;
+    private Label restartNote;
+    private bool responsiveLayoutReady;
+    private bool updatingResponsiveLayout;
+    private bool compactHeader;
+    private bool compactActions;
     private AdvertisementBanner advertisementBanner;
     private readonly CancellationTokenSource advertisementCancellation = new CancellationTokenSource();
     private readonly System.Windows.Forms.Timer advertisementRefreshTimer = new System.Windows.Forms.Timer();
@@ -63,6 +82,7 @@ public class MainForm : Form
         LoadInitialState();
         if (!previewMode)
         {
+            Shown += async delegate { await accountPanel.StartAsync(); };
             Shown += async delegate { await LoadAdvertisementsAsync(); };
             Shown += async delegate { await CheckUpdatesAsync(false); };
             advertisementRefreshTimer.Interval = 60000;
@@ -85,12 +105,12 @@ public class MainForm : Form
         Text = "codex官方中转站";
         Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         StartPosition = FormStartPosition.CenterScreen;
-        MaximizeBox = false;
+        MaximizeBox = true;
         Font = new Font("Segoe UI", 13F, FontStyle.Regular, GraphicsUnit.Pixel);
         BackColor = pageBack;
         ForeColor = textColor;
         ClientSize = new Size(620, BaseClientHeight);
-        MinimumSize = SizeFromClientSize(new Size(620, BaseClientHeight));
+        MinimumSize = SizeFromClientSize(new Size(MinimumClientWidth, BaseClientHeight));
         AutoScaleMode = AutoScaleMode.None;
         DoubleBuffered = true;
     }
@@ -103,22 +123,29 @@ public class MainForm : Form
 
     private void BuildLayout()
     {
+        layoutViewport = new Panel { Dock = DockStyle.Fill, BackColor = pageBack, AutoScroll = true };
+        layoutViewport.Layout += delegate { UpdateResponsiveLayout(); };
+        Controls.Add(layoutViewport);
         rootLayout = new TableLayoutPanel {
-            Dock = DockStyle.Fill, BackColor = pageBack, Padding = new Padding(16, 8, 16, 12),
-            ColumnCount = 1, RowCount = 4, AutoScroll = true, Margin = Padding.Empty
+            BackColor = pageBack, Padding = new Padding(16, 8, 16, 12),
+            ColumnCount = 1, RowCount = 5, Margin = Padding.Empty,
+            Size = new Size(620, BaseClientHeight)
         };
         rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 90));
         rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 152));
-        rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        Controls.Add(rootLayout);
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layoutViewport.Controls.Add(rootLayout);
         rootLayout.Controls.Add(BuildHeader(), 0, 0);
+        accountPanel = new AccountPanel(previewMode, controller.AccountDirectory);
+        rootLayout.Controls.Add(accountPanel, 0, 1);
         advertisementBanner = new AdvertisementBanner();
-        rootLayout.Controls.Add(advertisementBanner, 0, 1);
+        rootLayout.Controls.Add(advertisementBanner, 0, AdvertisementRow);
 
-        rootLayout.Controls.Add(BuildConnectionSection(), 0, 2);
-        rootLayout.Controls.Add(BuildStatusBar(), 0, 3);
+        rootLayout.Controls.Add(BuildConnectionSection(), 0, ConnectionRow);
+        rootLayout.Controls.Add(BuildStatusBar(), 0, StatusRow);
     }
 
     private Label CreateLabel(string text, float size, Color color)
@@ -144,7 +171,9 @@ public class MainForm : Form
             if (button != null) button.CornerRadius = PreviewPixels(button.CornerRadius);
         }
         ClientSize = new Size(PreviewPixels(620), PreviewPixels(BaseClientHeight));
-        MinimumSize = SizeFromClientSize(ClientSize);
+        MinimumSize = SizeFromClientSize(new Size(PreviewPixels(MinimumClientWidth), PreviewPixels(BaseClientHeight)));
+        responsiveLayoutReady = true;
+        UpdateResponsiveLayout();
         PerformLayout();
         layoutCredentialOverlays();
     }
@@ -157,22 +186,97 @@ public class MainForm : Form
 
     private static int PreviewPixels(int value) { return (int)Math.Round(value * PreviewScale); }
 
+    private void UpdateResponsiveLayout()
+    {
+        if (!responsiveLayoutReady || updatingResponsiveLayout || rootLayout == null || IsDisposed) return;
+        updatingResponsiveLayout = true;
+        try
+        {
+            // A task-sized column preserves readable lines on wide displays. Extra height
+            // surrounds the complete content group instead of inflating the status row.
+            int contentWidth = Math.Min(ClientSize.Width, PreviewPixels(MaximumContentWidth));
+            int linksWidth = 0;
+            foreach (Control link in headerLinks.Controls) linksWidth += link.Width + link.Margin.Horizontal;
+            int brandWidth = PreviewPixels(146);
+            int domainWidth = PreviewPixels(70);
+            int buttonsWidth = PreviewPixels(88 + 6 + 100);
+            int noteWidth = MeasureTextWidth(restartNote) + PreviewPixels(10);
+            int contentHeight = 0;
+            bool needsScroll = false;
+            rootLayout.SuspendLayout();
+            // Calculate again with the scrollbar's width when needed, so wrapping
+            // and breakpoints use the space actually available to the controls.
+            for (int pass = 0; pass < 2; pass++)
+            {
+                int innerWidth = Math.Max(1, contentWidth - rootLayout.Padding.Horizontal);
+                compactHeader = innerWidth < brandWidth + domainWidth + linksWidth + PreviewPixels(12);
+                int connectionWidth = innerWidth - connectionPanel.Padding.Horizontal;
+                compactActions = connectionWidth < Math.Max(noteWidth + buttonsWidth, PreviewPixels(460));
+                int actionsHeight = PreviewPixels(compactActions ? 54 : 30);
+                int hintHeight = Math.Max(PreviewPixels(28), MeasureLabelHeight(credentialHintLabel, connectionWidth));
+                int statusHeight = Math.Max(PreviewPixels(32), MeasureLabelHeight(statusLabel, innerWidth - PreviewPixels(4)) + PreviewPixels(4));
+                connectionLayout.RowStyles[2].Height = hintHeight;
+                connectionLayout.RowStyles[3].Height = actionsHeight;
+                rootLayout.RowStyles[0].Height = PreviewPixels(compactHeader ? 74 : 42);
+                rootLayout.RowStyles[ConnectionRow].Height = connectionPanel.Margin.Vertical + connectionPanel.Padding.Vertical
+                    + PreviewPixels(22 + 36) + hintHeight + actionsHeight;
+                rootLayout.RowStyles[StatusRow].Height = statusHeight;
+                contentHeight = rootLayout.Padding.Vertical;
+                foreach (RowStyle row in rootLayout.RowStyles) contentHeight += (int)Math.Ceiling(row.Height);
+                needsScroll = contentHeight > ClientSize.Height;
+                int nextWidth = Math.Min(PreviewPixels(MaximumContentWidth), ClientSize.Width - (needsScroll ? SystemInformation.VerticalScrollBarWidth : 0));
+                if (nextWidth == contentWidth) break;
+                contentWidth = nextWidth;
+            }
+            layoutViewport.AutoScrollMinSize = new Size(0, contentHeight);
+            int availableWidth = ClientSize.Width - (needsScroll ? SystemInformation.VerticalScrollBarWidth : 0);
+            int x = Math.Max(0, (availableWidth - contentWidth) / 2);
+            int y = needsScroll ? layoutViewport.AutoScrollPosition.Y : Math.Max(0, (ClientSize.Height - contentHeight) / 2);
+            rootLayout.SetBounds(x, y, contentWidth, contentHeight);
+            rootLayout.ResumeLayout(true);
+
+            int headerY = PreviewPixels(5);
+            brandLabel.SetBounds(0, headerY, brandWidth, PreviewPixels(28));
+            endpointAddress.SetBounds(brandWidth, headerY, domainWidth, PreviewPixels(28));
+            headerLinks.SetBounds(compactHeader ? 0 : Math.Max(0, headerPanel.Width - linksWidth),
+                compactHeader ? PreviewPixels(37) : headerY, linksWidth, PreviewPixels(28));
+
+            int actionWidth = connectionActions.ClientSize.Width;
+            int buttonY = compactActions ? PreviewPixels(24) : 0;
+            int buttonHeight = PreviewPixels(30);
+            restartNote.SetBounds(0, 0, compactActions ? actionWidth : Math.Max(0, actionWidth - buttonsWidth - PreviewPixels(10)),
+                compactActions ? PreviewPixels(24) : buttonHeight);
+            openCodexButton.SetBounds(Math.Max(0, actionWidth - buttonsWidth), buttonY, PreviewPixels(88), buttonHeight);
+            restoreButton.SetBounds(Math.Max(0, actionWidth - PreviewPixels(100)), buttonY, PreviewPixels(100), buttonHeight);
+            if (layoutCredentialOverlays != null) layoutCredentialOverlays();
+        }
+        finally { updatingResponsiveLayout = false; }
+    }
+
+    private static int MeasureTextWidth(Label label)
+    {
+        using (Graphics graphics = label.CreateGraphics())
+            return (int)Math.Ceiling(graphics.MeasureString(label.Text, label.Font).Width);
+    }
+
+    private static int MeasureLabelHeight(Label label, int width)
+    {
+        using (Graphics graphics = label.CreateGraphics())
+            return (int)Math.Ceiling(graphics.MeasureString(String.IsNullOrEmpty(label.Text) ? " " : label.Text,
+                label.Font, Math.Max(1, width - label.Padding.Horizontal)).Height) + label.Padding.Vertical;
+    }
+
     private Control BuildHeader()
     {
-        var panel = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = pageBack };
-        var brand = CreateLabel("codex官方中转站", 13, accent);
-        brand.Name = "brandLabel";
-        brand.Font = new Font(Font.FontFamily, 13, FontStyle.Bold, GraphicsUnit.Pixel);
-        var topbar = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
-        brand.Dock = DockStyle.Left;
-        brand.Width = 146;
-        var endpointAddress = CreateLabel(new Uri(AppController.OfficialRelayUrl).Host, 11, mutedColor);
+        headerPanel = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = pageBack };
+        brandLabel = CreateLabel("codex官方中转站", 13, accent);
+        brandLabel.Name = "brandLabel";
+        brandLabel.Font = new Font(Font.FontFamily, 13, FontStyle.Bold, GraphicsUnit.Pixel);
+        endpointAddress = CreateLabel(new Uri(AppController.OfficialRelayUrl).Host, 11, mutedColor);
         endpointAddress.Font = new Font("Segoe UI", 11, FontStyle.Regular, GraphicsUnit.Pixel);
-        endpointAddress.Dock = DockStyle.Left;
-        endpointAddress.Width = 70;
-        topbar.Controls.Add(endpointAddress);
-        topbar.Controls.Add(brand);
-        var links = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 344, Margin = Padding.Empty, Padding = new Padding(0, 5, 0, 5), FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
+        headerPanel.Controls.Add(endpointAddress);
+        headerPanel.Controls.Add(brandLabel);
+        headerLinks = new FlowLayoutPanel { Width = 344, Margin = Padding.Empty, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
         officialWebsiteButton = CreateSecondaryButton("官网 ↗");
         officialWebsiteButton.Size = new Size(60, 28);
         officialWebsiteButton.Dock = DockStyle.None;
@@ -183,8 +287,8 @@ public class MainForm : Form
         rechargeButton.Dock = DockStyle.None;
         rechargeButton.Margin = new Padding(4, 0, 0, 0);
         rechargeButton.Click += OpenRecharge;
-        links.Controls.Add(officialWebsiteButton);
-        links.Controls.Add(rechargeButton);
+        headerLinks.Controls.Add(officialWebsiteButton);
+        headerLinks.Controls.Add(rechargeButton);
         updateButton = CreateSecondaryButton("检查更新");
         updateButton.Size = new Size(98, 28);
         updateButton.Dock = DockStyle.None;
@@ -195,15 +299,15 @@ public class MainForm : Form
             else RestartAndUpdate();
         };
         updateButton.Enabled = !previewMode;
-        links.Controls.Add(updateButton);
+        headerLinks.Controls.Add(updateButton);
         appearanceButton = CreateSecondaryButton("主题选择");
         appearanceButton.AccessibleName = "打开 Codex 主题选择";
         appearanceButton.Size = new Size(90, 28);
         appearanceButton.Dock = DockStyle.None;
         appearanceButton.Margin = Padding.Empty;
         appearanceButton.Click += OpenAppearanceSettings;
-        links.Controls.Add(appearanceButton);
-        foreach (DesktopButton button in links.Controls)
+        headerLinks.Controls.Add(appearanceButton);
+        foreach (DesktopButton button in headerLinks.Controls)
         {
             button.Borderless = true;
             button.BackColor = pageBack;
@@ -211,16 +315,16 @@ public class MainForm : Form
         }
         appearanceButton.BackColor = Color.FromArgb(237, 244, 255);
         appearanceButton.ForeColor = accent;
-        topbar.Controls.Add(links);
-        panel.Controls.Add(topbar);
-        return panel;
+        headerPanel.Controls.Add(headerLinks);
+        return headerPanel;
     }
 
     private Control BuildConnectionSection()
     {
-        var panel = new RoundedPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 8),
+        connectionPanel = new RoundedPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 8),
             BackColor = panelBack, BorderColor = borderColor, CornerRadius = 8, Padding = new Padding(14, 12, 14, 12) };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Margin = Padding.Empty };
+        connectionLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Margin = Padding.Empty };
+        var layout = connectionLayout;
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
@@ -265,24 +369,20 @@ public class MainForm : Form
         credentialHintLabel.TextAlign = ContentAlignment.TopLeft;
         credentialHintLabel.Padding = new Padding(0, 6, 0, 0);
         layout.Controls.Add(credentialHintLabel, 0, 2);
-        var actions = new TableLayoutPanel { Dock = DockStyle.Fill, Margin = Padding.Empty, ColumnCount = 4, RowCount = 1 };
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 6));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-        actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var note = CreateLabel("保存设置后重新启动 Codex", 11, mutedColor);
-        note.Dock = DockStyle.Fill;
+        connectionActions = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+        restartNote = CreateLabel("保存设置后重新启动 Codex", 11, mutedColor);
         openCodexButton = CreateSecondaryButton("打开 Codex");
         restoreButton = CreateSecondaryButton("恢复上次配置");
+        openCodexButton.Dock = DockStyle.None;
+        restoreButton.Dock = DockStyle.None;
         openCodexButton.Click += OpenCodex;
         restoreButton.Click += Restore;
-        actions.Controls.Add(note, 0, 0);
-        actions.Controls.Add(openCodexButton, 1, 0);
-        actions.Controls.Add(restoreButton, 3, 0);
-        layout.Controls.Add(actions, 0, 3);
-        panel.Controls.Add(layout);
-        return panel;
+        connectionActions.Controls.Add(restartNote);
+        connectionActions.Controls.Add(openCodexButton);
+        connectionActions.Controls.Add(restoreButton);
+        layout.Controls.Add(connectionActions, 0, 3);
+        connectionPanel.Controls.Add(layout);
+        return connectionPanel;
     }
 
     private Control BuildStatusBar()
@@ -528,15 +628,16 @@ public class MainForm : Form
         int height = items.Length == 0 ? 0 : PreviewPixels(50);
         rootLayout.SuspendLayout();
         advertisementBanner.SetItems(items);
-        rootLayout.RowStyles[1].Height = height;
+        rootLayout.RowStyles[AdvertisementRow].Height = height;
         rootLayout.AutoScrollMinSize = Size.Empty;
         AdjustAdvertisementWindowHeight();
         rootLayout.ResumeLayout(true);
+        UpdateResponsiveLayout();
     }
 
     private void AdjustAdvertisementWindowHeight()
     {
-        int height = (int)rootLayout.RowStyles[1].Height;
+        int height = (int)rootLayout.RowStyles[AdvertisementRow].Height;
         if (WindowState != FormWindowState.Normal || height == advertisementWindowRowHeight) return;
         int availableHeight = Screen.FromControl(this).WorkingArea.Height - (Height - ClientSize.Height);
         int baseHeight = ClientSize.Height - advertisementWindowHeightAdjustment;
@@ -550,8 +651,9 @@ public class MainForm : Form
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        if (rootLayout != null && rootLayout.RowStyles.Count > 1 && IsHandleCreated &&
-            (int)rootLayout.RowStyles[1].Height != advertisementWindowRowHeight)
+        UpdateResponsiveLayout();
+        if (rootLayout != null && rootLayout.RowStyles.Count > AdvertisementRow && IsHandleCreated &&
+            (int)rootLayout.RowStyles[AdvertisementRow].Height != advertisementWindowRowHeight)
         {
             // WinForms restores its saved bounds after the resize notification.
             BeginInvoke((Action)delegate { if (!IsDisposed) AdjustAdvertisementWindowHeight(); });
@@ -577,6 +679,7 @@ public class MainForm : Form
 
     private void SetBusy(bool busy, string message)
     {
+        accountPanel.SetOperationsEnabled(!busy);
         applyButton.Enabled = !busy && !previewMode;
         openCodexButton.Enabled = !busy && !previewMode;
         restoreButton.Enabled = !busy && !previewMode;
@@ -593,6 +696,7 @@ public class MainForm : Form
     private void SetStatus(string text)
     {
         statusLabel.Text = text;
+        UpdateResponsiveLayout();
     }
 
     private string EmptyTo(string value, string fallback)

@@ -1,5 +1,9 @@
 using System;
 using System.IO;
+using System.Security.Cryptography;
+using System.Security.Principal;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -10,6 +14,7 @@ internal static class Program
     {
         try
         {
+            WebViewRuntime.InstallAssemblyResolver();
             if (args.Length == 2 && args[0] == "--skin-host") return SkinBridge.RunHost(args[1]);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -74,7 +79,22 @@ internal static class Program
                 return exitCode;
             }
             if (args.Length != 0) return 2;
-            Application.Run(new MainForm(new AppController(), false, new CodexThemeGalleryService(new GalleryCatalog())));
+            var controller = new AppController();
+            using (var mutex = new Mutex(false, AccountMutexName(controller.AccountDirectory)))
+            {
+                bool ownsMutex;
+                try { ownsMutex = mutex.WaitOne(0); }
+                catch (AbandonedMutexException) { ownsMutex = true; }
+                if (!ownsMutex)
+                {
+                    MessageBox.Show("助手已在运行，请使用已有窗口。", "Codex Companion", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return 0;
+                }
+                // The refresh cookie rotates after each use. A single UI process owns
+                // this user's account data until Application.Run exits on the STA thread.
+                try { Application.Run(new MainForm(controller, false, new CodexThemeGalleryService(new GalleryCatalog()))); }
+                finally { mutex.ReleaseMutex(); }
+            }
             return 0;
         }
         catch (Exception error)
@@ -82,5 +102,14 @@ internal static class Program
             if (args.Length == 0) MessageBox.Show(error.Message, "Codex Companion", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
+    }
+
+    private static string AccountMutexName(string accountDirectory)
+    {
+        string user;
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) { user = identity.User.Value; }
+        string account = Path.GetFullPath(accountDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToUpperInvariant();
+        using (var sha = SHA256.Create())
+            return "Global\\CodexCompanion.Account." + BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(user + "|" + account))).Replace("-", "");
     }
 }

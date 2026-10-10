@@ -31,6 +31,11 @@ jobs:
         run: |
           & .\.build\Regression.exe (Join-Path $env:RUNNER_TEMP 'companion-relay-tests') --relay
           if ($LASTEXITCODE -ne 0) { throw 'Relay tests failed.' }
+      - name: Verify website account contract
+        shell: pwsh
+        run: |
+          & .\.build\Regression.exe (Join-Path $env:RUNNER_TEMP 'companion-account-tests') --account
+          if ($LASTEXITCODE -ne 0) { throw 'Account tests failed.' }
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:

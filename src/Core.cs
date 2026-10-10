@@ -418,6 +418,7 @@ public sealed class AppController
     string SettingsPath { get { return Path.Combine(dataDirectory, "settings.json"); } }
     string AppearanceSettingsPath { get { return Path.Combine(dataDirectory, "appearance-settings.json"); } }
     string KeyPath { get { return Path.Combine(dataDirectory, "credential.bin"); } }
+    internal string AccountDirectory { get { return Path.Combine(dataDirectory, "website-account"); } }
     public bool HasCredential { get { return File.Exists(KeyPath); } }
     public AppController() : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MidWebCodex"),
         Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex")) { }
