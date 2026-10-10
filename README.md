@@ -2,9 +2,13 @@
 
 一个用于 Windows 10/11 的小型配置工具：为已安装的 Codex 桌面版配置 Codex Relay 中转、原生主题、QQ 风格外观。程序不承接模型转发、充值或计费；这些仍由 Codex Relay 提供。
 
+## 项目维护
+
+自 2026-10-10 起，`Codex-Companion-main` 是 `codex_app-xai-tools` 的后续版本和唯一维护项目。后续修改、构建、提交及推送均在本项目进行，旧项目停止使用。唯一维护的 GitHub 仓库为 [AhaRui-888/Codex-Companion](https://github.com/AhaRui-888/Codex-Companion)，发布及自动更新也使用此仓库。
+
 ## 使用
 
-> 当前验证（2026-10-02）：默认 `bin/CodexCompanion.exe` 已重新构建，全量隔离回归通过，包含配置恢复、更新并发、图库滚动与缓存释放、广告及 UI 检查。本轮没有修改真实 Codex 配置，也没有退出或重启用户真实 Codex；真实客户端退出、重启与模型通信仍需实机验证。
+> 当前验证（2026-10-10）：默认 `bin/CodexCompanion.exe` 已重新构建，全量隔离回归通过，包含配置恢复、更新并发、图库滚动与缓存释放、广告及 UI 检查。本轮没有修改真实 Codex 配置，也没有退出或重启用户真实 Codex；真实客户端退出、重启与模型通信仍需实机验证。
 
 1. 先安装并启动一次官方 Codex 桌面版，配置或恢复前先保存正在进行的工作。
 2. 双击 `bin/CodexCompanion.exe`，无需安装 Node.js、Python 或其他运行时。若从源码启动，在项目根目录运行：
@@ -97,7 +101,7 @@ powershell -NoProfile -File .\build.ps1 -Test
 
 ## GitHub 发布与自动更新
 
-首次安装从 [GitHub Releases](https://github.com/shuhengdaxia/Codex-Companion/releases) 下载 `CodexCompanion-Windows.zip`，解压到可写目录并运行 `CodexCompanion.exe`。程序启动时会在后台检查公开的最新稳定版本；顶部“检查更新”也可手动触发。GitHub API 暂时不可用或达到限额时，程序会通过同一仓库的 Releases 最新版本页面继续检查。新版 EXE 下载并通过同一 Release 中的 SHA-256 校验后，按钮变为“重启并更新”。点击后助手退出，独立更新程序替换 EXE 并重新打开助手。失败时保留或恢复旧 EXE，不修改 Codex 配置、密钥或主题图库。若安装目录不可写，更新会失败；请将便携包解压到当前用户可写目录。
+首次安装从 [GitHub Releases](https://github.com/AhaRui-888/Codex-Companion/releases) 下载 `CodexCompanion-Windows.zip`，解压到可写目录并运行 `CodexCompanion.exe`。程序启动时会在后台检查公开的最新稳定版本；顶部“检查更新”也可手动触发。GitHub API 暂时不可用或达到限额时，程序会通过同一仓库的 Releases 最新版本页面继续检查。新版 EXE 下载并通过同一 Release 中的 SHA-256 校验后，按钮变为“重启并更新”。点击后助手退出，独立更新程序替换 EXE 并重新打开助手。失败时保留或恢复旧 EXE，不修改 Codex 配置、密钥或主题图库。若安装目录不可写，更新会失败；请将便携包解压到当前用户可写目录。
 
 发布时先更新 `version.txt` 为 `major.minor.patch`，提交并推送代码，然后推送同版本的 `vmajor.minor.patch` 标签。GitHub Actions 在 Windows 上构建并运行更新校验与中转契约测试，生成 EXE、`CodexCompanion.exe.sha256` 和便携 ZIP，并上传 Release。UI 测试需要交互式 Windows 桌面，在本地运行。`assets/theme-gallery` 中的第三方二进制包与预览文件不进入源码仓库及便携包；在线主题图库仍可按需下载，已有本地图库不会被自动更新删除。
 

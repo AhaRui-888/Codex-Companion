@@ -37,7 +37,7 @@ internal static class AutoUpdater
 {
     internal const string ExecutableName = "CodexCompanion.exe";
     internal const string HashName = "CodexCompanion.exe.sha256";
-    internal const string Repository = "shuhengdaxia/Codex-Companion";
+    internal const string Repository = "AhaRui-888/Codex-Companion";
     internal const string ReleaseApi = "https://api.github.com/repos/" + Repository + "/releases/latest";
     internal const string ReleasePage = "https://github.com/" + Repository + "/releases/latest";
     private const long MaximumExecutableBytes = 64L * 1024 * 1024;

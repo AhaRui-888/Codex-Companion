@@ -19,17 +19,17 @@ internal static class AutoUpdaterTests
         Assert(AutoUpdater.ParseHash(hash + "  CodexCompanion.exe") == hash, "hash parse");
         Reject(delegate { AutoUpdater.ParseHash(hash + "  another.exe"); });
         Reject(delegate { AutoUpdater.ParseHash("abc  CodexCompanion.exe"); });
-        string url = "https://github.com/shuhengdaxia/Codex-Companion/releases/download/v1.2.3/CodexCompanion.exe";
+        string url = "https://github.com/AhaRui-888/Codex-Companion/releases/download/v1.2.3/CodexCompanion.exe";
         AutoUpdater.ValidateAssetUrl(url, "v1.2.3", AutoUpdater.ExecutableName);
-        Reject(delegate { AutoUpdater.ValidateAssetUrl(url.Replace("shuhengdaxia", "AhaRui-888"), "v1.2.3", AutoUpdater.ExecutableName); });
+        Reject(delegate { AutoUpdater.ValidateAssetUrl(url.Replace("AhaRui-888", "other-owner"), "v1.2.3", AutoUpdater.ExecutableName); });
         Reject(delegate { AutoUpdater.ValidateAssetUrl(url.Replace("github.com", "example.com"), "v1.2.3", AutoUpdater.ExecutableName); });
         Reject(delegate { AutoUpdater.ValidateAssetUrl(url + "?other=1", "v1.2.3", AutoUpdater.ExecutableName); });
         Reject(delegate { AutoUpdater.ValidateAssetUrl(url.Replace("v1.2.3", "v1.2.4"), "v1.2.3", AutoUpdater.ExecutableName); });
-        Assert(AutoUpdater.ParseReleasePageUrl(new Uri("https://github.com/shuhengdaxia/Codex-Companion/releases/tag/v1.2.3")) == new Version(1, 2, 3), "release page URL");
+        Assert(AutoUpdater.ParseReleasePageUrl(new Uri("https://github.com/AhaRui-888/Codex-Companion/releases/tag/v1.2.3")) == new Version(1, 2, 3), "release page URL");
         Reject(delegate { AutoUpdater.ParseReleasePageUrl(new Uri("https://github.com/other/Codex-Companion/releases/tag/v1.2.3")); });
-        Reject(delegate { AutoUpdater.ParseReleasePageUrl(new Uri("https://example.com/shuhengdaxia/Codex-Companion/releases/tag/v1.2.3")); });
-        Reject(delegate { AutoUpdater.ParseReleasePageUrl(new Uri("https://github.com/shuhengdaxia/Codex-Companion/releases/tag/v1.2.3?x=1")); });
-        Reject(delegate { AutoUpdater.ParseReleasePageUrl(new Uri("https://github.com/shuhengdaxia/Codex-Companion/releases/tag/1.2.3")); });
+        Reject(delegate { AutoUpdater.ParseReleasePageUrl(new Uri("https://example.com/AhaRui-888/Codex-Companion/releases/tag/v1.2.3")); });
+        Reject(delegate { AutoUpdater.ParseReleasePageUrl(new Uri("https://github.com/AhaRui-888/Codex-Companion/releases/tag/v1.2.3?x=1")); });
+        Reject(delegate { AutoUpdater.ParseReleasePageUrl(new Uri("https://github.com/AhaRui-888/Codex-Companion/releases/tag/1.2.3")); });
         UpdateRelease release = new UpdateRelease { tag_name = "v1.2.3", assets = new[] {
             new UpdateAsset { name = AutoUpdater.ExecutableName, browser_download_url = url, size = 1024 }
         } };
