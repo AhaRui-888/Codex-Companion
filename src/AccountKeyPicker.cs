@@ -9,6 +9,7 @@ using System.Windows.Forms;
 internal sealed class AccountKeyPicker : Panel
 {
     private readonly Button toggle;
+    private readonly Label heading;
     private readonly ComboBox keys;
     private readonly Label message;
     private readonly string directory;
@@ -18,20 +19,22 @@ internal sealed class AccountKeyPicker : Panel
     internal event Action HeightChanged;
     internal event Action<string> KeyChosen;
     internal bool HasAccount { get { return userId != null; } }
-    internal int LogicalHeight { get { return HasAccount ? (expanded ? 100 : 28) : 0; } }
+    internal int LogicalHeight { get { return (int)Math.Ceiling(RequiredHeight(Width) * 13F / Font.Size); } }
 
     internal AccountKeyPicker(string directory)
     {
         this.directory = directory;
         Font = new Font("Segoe UI", 13F, FontStyle.Regular, GraphicsUnit.Pixel);
         Margin = Padding.Empty; Dock = DockStyle.Fill;
-        toggle = new DesktopButton { Text = "展开账户 API Key", Borderless = true, ForeColor = DesktopPalette.Text,
+        heading = new Label { Text = "账户 API Key", ForeColor = DesktopPalette.Text, UseMnemonic = false,
+            TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Pixel) };
+        toggle = new DesktopButton { Text = "展开", Borderless = true, ForeColor = DesktopPalette.Accent,
             AccessibleName = "展开或收起账户 API Key 列表", Font = new Font("Segoe UI", 11F, FontStyle.Regular, GraphicsUnit.Pixel) };
-        keys = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, IntegralHeight = false, MaxDropDownItems = 8,
+        keys = new DesktopComboBox { MaxDropDownItems = 8,
             DropDownHeight = 200, AccessibleName = "选择已登录账户的 API Key", Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Pixel) };
-        message = new Label { ForeColor = DesktopPalette.Muted, UseMnemonic = false, AutoEllipsis = true,
+        message = new Label { ForeColor = DesktopPalette.Muted, UseMnemonic = false, UseCompatibleTextRendering = true,
             Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Pixel) };
-        Controls.AddRange(new Control[] { toggle, keys, message });
+        Controls.AddRange(new Control[] { heading, toggle, keys, message });
         toggle.Click += delegate { expanded = !expanded; RefreshLayout(); if (HeightChanged != null) HeightChanged(); };
         keys.SelectionChangeCommitted += delegate { SelectKey(); };
         Resize += delegate { RefreshLayout(); };
@@ -39,13 +42,37 @@ internal sealed class AccountKeyPicker : Panel
     }
 
     private int Pixels(int value) { return (int)Math.Round(value * Font.Size / 13F); }
+    private int MessageHeight(int width)
+    {
+        using (var graphics = message.CreateGraphics())
+            return Math.Max(Pixels(16), (int)Math.Ceiling(graphics.MeasureString(String.IsNullOrEmpty(message.Text) ? " " : message.Text,
+                message.Font, Math.Max(1, width)).Height));
+    }
+
+    internal int RequiredHeight(int width)
+    {
+        keys.ItemHeight = Pixels(26);
+        return !HasAccount ? 0 : !expanded ? Pixels(32) : Pixels(43) + keys.Height + MessageHeight(width);
+    }
+
     private void RefreshLayout()
     {
-        toggle.SetBounds(0, 0, ClientSize.Width, Pixels(26));
-        toggle.Text = (expanded ? "收起" : "展开") + "账户 API Key（" + entries.Length + "）";
+        if (toggle == null) return;
+        heading.Text = "账户 API Key · " + entries.Length + " 个";
+        heading.SetBounds(0, 0, Math.Max(0, ClientSize.Width - Pixels(58)), Pixels(26));
+        toggle.SetBounds(Math.Max(0, ClientSize.Width - Pixels(50)), 0, Pixels(50), Pixels(26));
+        toggle.Text = expanded ? "收起" : "展开";
         keys.Visible = message.Visible = expanded && HasAccount;
-        keys.SetBounds(0, Pixels(30), ClientSize.Width, Pixels(28));
-        message.SetBounds(0, Pixels(62), ClientSize.Width, Pixels(34));
+        keys.ItemHeight = Pixels(26);
+        keys.SetBounds(0, Pixels(30), ClientSize.Width, Pixels(30));
+        message.SetBounds(0, keys.Bottom + Pixels(5), ClientSize.Width, MessageHeight(ClientSize.Width));
+    }
+
+    private void SetMessage(string text)
+    {
+        message.Text = text;
+        RefreshLayout();
+        if (HeightChanged != null) HeightChanged();
     }
 
     internal void SetAccount(string account, AccountApiKey[] values, string error)
@@ -62,9 +89,8 @@ internal sealed class AccountKeyPicker : Panel
         updating = false;
         if (changedUser) expanded = account != null;
         Visible = HasAccount;
-        message.Text = error ?? (entries.Length == 0 ? "此账户暂无 API Key，可继续手动粘贴。" : "选择 Key；首次使用需粘贴完整密钥，成功配置后可自动填入。");
-        RefreshLayout();
-        if (HeightChanged != null) HeightChanged();
+        keys.Enabled = entries.Length > 0;
+        SetMessage(error ?? (entries.Length == 0 ? "此账户暂无 API Key，可在下方手动粘贴。" : "首次使用请在下方粘贴完整 Key；配置成功后可自动填入。"));
     }
 
     private string KeyPath(AccountApiKey entry)
@@ -101,8 +127,8 @@ internal sealed class AccountKeyPicker : Panel
         if (updating || keys.SelectedItem == null) return;
         var entry = (AccountApiKey)keys.SelectedItem;
         string value = CachedKey(entry);
-        message.Text = !entry.Usable ? "此 Key 已停用、撤销或过期，请选择其他 Key。" : value == null
-            ? "官网不返回已有完整 Key，请粘贴此 Key；成功配置后会加密记住。" : "已从本机加密副本填入，可继续手动编辑。";
+        SetMessage(!entry.Usable ? "此 Key 已停用、撤销或过期，请选择其他 Key。" : value == null
+            ? "请在下方粘贴此 Key 的完整密钥；配置成功后会加密记住。" : "已从本机加密副本填入，可继续手动编辑。");
         if (KeyChosen != null) KeyChosen(value);
     }
 
@@ -124,8 +150,8 @@ internal sealed class AccountKeyPicker : Panel
         var entry = entries.FirstOrDefault(item => Matches(item, secret));
         if (entry == null) return;
         byte[] plain = PrivateFiles.Utf8.GetBytes(secret);
-        try { PrivateFiles.WriteAtomic(KeyPath(entry), PrivateFiles.Protect(plain)); message.Text = "已加密记住此 Key，下次可从列表选择。"; }
-        catch { message.Text = "配置成功，但账户 Key 副本保存失败；下次可手动粘贴。"; }
+        try { PrivateFiles.WriteAtomic(KeyPath(entry), PrivateFiles.Protect(plain)); SetMessage("已加密记住此 Key，下次可从列表选择。"); }
+        catch { SetMessage("配置成功，但账户 Key 副本保存失败；下次可手动粘贴。"); }
         finally { Array.Clear(plain, 0, plain.Length); }
     }
 }

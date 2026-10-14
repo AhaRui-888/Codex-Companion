@@ -55,6 +55,8 @@ public class MainForm : Form
     private Label restartNote;
     private bool responsiveLayoutReady;
     private bool updatingResponsiveLayout;
+    private bool accountContentNeedsFit;
+    private Size resizeStartClientSize;
     private bool compactHeader;
     private bool compactActions;
     private AdvertisementBanner advertisementBanner;
@@ -221,11 +223,13 @@ public class MainForm : Form
                 int statusHeight = Math.Max(PreviewPixels(32), MeasureLabelHeight(statusLabel, innerWidth - PreviewPixels(4)) + PreviewPixels(4));
                 connectionLayout.RowStyles[3].Height = hintHeight;
                 connectionLayout.RowStyles[4].Height = actionsHeight;
-                int keysHeight = PreviewPixels(accountKeyPicker.LogicalHeight);
+                int labelHeight = accountKeyPicker.HasAccount ? 0 : PreviewPixels(22);
+                connectionLayout.RowStyles[0].Height = labelHeight;
+                int keysHeight = accountKeyPicker.RequiredHeight(connectionWidth);
                 connectionLayout.RowStyles[1].Height = keysHeight;
                 rootLayout.RowStyles[0].Height = PreviewPixels(compactHeader ? 74 : 42);
                 rootLayout.RowStyles[ConnectionRow].Height = connectionPanel.Margin.Vertical + connectionPanel.Padding.Vertical
-                    + PreviewPixels(22 + 36) + hintHeight + actionsHeight + keysHeight;
+                    + labelHeight + PreviewPixels(36) + hintHeight + actionsHeight + keysHeight;
                 rootLayout.RowStyles[StatusRow].Height = statusHeight;
                 contentHeight = rootLayout.Padding.Vertical;
                 foreach (RowStyle row in rootLayout.RowStyles) contentHeight += (int)Math.Ceiling(row.Height);
@@ -266,6 +270,22 @@ public class MainForm : Form
             if (layoutCredentialOverlays != null) layoutCredentialOverlays();
         }
         finally { updatingResponsiveLayout = false; }
+    }
+
+    private void FitAccountContentHeight()
+    {
+        UpdateResponsiveLayout();
+        if (!responsiveLayoutReady || WindowState != FormWindowState.Normal) return;
+        accountContentNeedsFit = false;
+        Rectangle working = Screen.FromControl(this).WorkingArea;
+        int availableHeight = working.Height - (Height - ClientSize.Height);
+        int nextHeight = Math.Min(rootLayout.Height, availableHeight);
+        if (nextHeight <= ClientSize.Height) return;
+        // Content revealed by login or disclosure must fit by default. A later
+        // deliberate short resize still has native scrolling on small displays.
+        ClientSize = new Size(ClientSize.Width, nextHeight);
+        if (Bottom > working.Bottom) Top = Math.Max(working.Top, working.Bottom - Height);
+        UpdateResponsiveLayout();
     }
 
     private static int MeasureTextWidth(Label label)
@@ -392,7 +412,15 @@ public class MainForm : Form
         connectionActions.Controls.Add(restoreButton);
         layout.Controls.Add(connectionActions, 0, 4);
         accountKeyPicker = new AccountKeyPicker(controller.AccountDirectory);
-        accountKeyPicker.HeightChanged += delegate { UpdateResponsiveLayout(); };
+        accountKeyPicker.HeightChanged += delegate {
+            float previousHeight = connectionLayout.RowStyles[1].Height;
+            UpdateResponsiveLayout();
+            if (connectionLayout.RowStyles[1].Height > previousHeight)
+            {
+                accountContentNeedsFit = true;
+                FitAccountContentHeight();
+            }
+        };
         accountKeyPicker.KeyChosen += delegate(string value) {
             if (value != null || apiKeyTextBox.Text == automaticallyFilledKey) apiKeyTextBox.Text = value ?? "";
             automaticallyFilledKey = value;
@@ -683,6 +711,21 @@ public class MainForm : Form
             // WinForms restores its saved bounds after the resize notification.
             BeginInvoke((Action)delegate { if (!IsDisposed) AdjustAdvertisementWindowHeight(); });
         }
+        if (accountContentNeedsFit && WindowState == FormWindowState.Normal && IsHandleCreated)
+            BeginInvoke((Action)delegate { if (!IsDisposed && accountContentNeedsFit) FitAccountContentHeight(); });
+    }
+
+    protected override void OnResizeBegin(EventArgs e)
+    {
+        resizeStartClientSize = ClientSize;
+        base.OnResizeBegin(e);
+    }
+
+    protected override void OnResizeEnd(EventArgs e)
+    {
+        base.OnResizeEnd(e);
+        if (accountKeyPicker != null && accountKeyPicker.HasAccount && ClientSize.Width != resizeStartClientSize.Width
+            && ClientSize.Height == resizeStartClientSize.Height) FitAccountContentHeight();
     }
 
     protected override void Dispose(bool disposing)

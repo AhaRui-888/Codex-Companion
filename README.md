@@ -8,7 +8,7 @@
 
 ## 使用
 
-> 当前交付（2026-10-14）：新版程序位于 `bin/updated/CodexCompanion.exe` 和 `dist/CodexCompanion.exe`，便携包为 `dist/CodexCompanion-Windows.zip`。原 `bin/CodexCompanion.exe` 因仍在运行而保留。此次增加紧凑充值弹窗、账户 API Key 列表和本机加密 Key 自动填入；充值浏览器验证使用官网公开页面与隔离响应，不使用真实账户或创建付款订单。验证记录见 [UI-REFRESH.md](UI-REFRESH.md)。
+> 当前交付（2026-10-15）：新版程序位于 `bin/polished/CodexCompanion.exe` 和 `dist/CodexCompanion.exe`，便携包为 `dist/CodexCompanion-Windows.zip`。账户 API Key 栏采用紧凑标题、统一样式下拉框和可换行提示；登录、展开列表及拖窄窗口后自动适配所需高度。充值订单按钮修复悬浮时文字不清的问题，统一正常、悬浮、按下、焦点和禁用状态。充值浏览器验证使用官网公开页面与隔离响应。验证记录见 [UI-REFRESH.md](UI-REFRESH.md)。
 
 1. 先安装并启动一次官方 Codex 桌面版，配置或恢复前先保存正在进行的工作。
 2. 双击 `bin/CodexCompanion.exe`，无需安装 Node.js、Python 或其他运行时。若从源码启动，在项目根目录运行：

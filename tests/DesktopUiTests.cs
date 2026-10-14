@@ -102,24 +102,53 @@ internal static class DesktopUiTests
             Assert(!Directory.Exists(data) && !Directory.Exists(codex), "UI-only interactions must not write configuration.");
             key.Text = "sk-manually-pasted-fixture";
             Call(form, "SetStatus", "界面效果预览 · API Key 列表使用隔离数据。");
+            form.ClientSize = new Size(930, 504);
+            Application.DoEvents();
             Call(form, "UpdateAccountKeys", "fixture-user", new[] {
                 new AccountApiKey { Id = "one", Name = "工作项目", Prefix = "sk-work-", Status = "ACTIVE" },
                 new AccountApiKey { Id = "two", Name = "个人项目", Prefix = "sk-personal-", Status = "ACTIVE" } }, null);
             Assert(key.Text == "sk-manually-pasted-fixture", "loading account keys must preserve manually pasted input");
             var picker = Field<AccountKeyPicker>(form, "accountKeyPicker");
+            Application.DoEvents();
+            Assert(form.ClientSize.Height > 504 && !viewport.VerticalScroll.Visible,
+                "Loading account keys at the default size must fit the complete content automatically.");
+            Assert(Screen.FromControl(form).WorkingArea.Contains(form.Bounds), "Automatic height must stay within the screen working area.");
+            SaveClient(form, Path.Combine(root, "desktop-keys-default.png"));
+            // A width-only drag fits newly wrapped content; a deliberate short
+            // resize still permits scrolling instead of fighting the user.
+            Call(form, "OnResizeBegin", EventArgs.Empty);
+            form.ClientSize = new Size(660, form.ClientSize.Height);
+            Call(form, "OnResizeEnd", EventArgs.Empty);
+            Application.DoEvents();
+            Assert(!viewport.VerticalScroll.Visible, "Narrowing a signed-in window must adapt its height after the drag.");
+            SaveClient(form, Path.Combine(root, "desktop-keys-fit-narrow.png"));
             foreach (var size in new[] { new Size(930, 700), new Size(660, 820) })
             {
                 form.ClientSize = size;
                 Application.DoEvents();
                 CheckLayout(form);
                 foreach (Control control in picker.Controls)
-                    if (control.Visible) Assert(picker.ClientRectangle.Contains(control.Bounds), "expanded account key controls must fit at all supported widths");
+                    if (control.Visible) Assert(picker.ClientRectangle.Contains(control.Bounds), "expanded account key controls must fit at all supported widths: "
+                        + control.GetType().Name + " " + control.Bounds + " inside " + picker.ClientRectangle);
+                var keyMessage = Field<Label>(picker, "message");
+                using (var graphics = keyMessage.CreateGraphics())
+                    Assert(graphics.MeasureString(keyMessage.Text, keyMessage.Font, keyMessage.Width).Height <= keyMessage.Height,
+                        "Account key guidance must wrap without clipping.");
                 SaveClient(form, Path.Combine(root, "desktop-keys-" + size.Width + ".png"));
             }
             Field<Button>(picker, "toggle").PerformClick();
-            Assert(picker.LogicalHeight == 28, "account key list must collapse");
+            Assert(picker.LogicalHeight == 32, "account key list must collapse");
+            form.ClientSize = new Size(930, 504);
+            Field<Button>(picker, "toggle").PerformClick();
+            Application.DoEvents();
+            Assert(!viewport.VerticalScroll.Visible, "Reopening the key list must fit the default window without scrolling.");
+            var fittedSize = form.ClientSize;
+            Field<Button>(picker, "toggle").PerformClick();
+            Field<Button>(picker, "toggle").PerformClick();
+            Assert(form.ClientSize == fittedSize, "Repeated disclosure must not accumulate height adjustments.");
             Call(form, "UpdateAccountKeys", null, new AccountApiKey[0], null);
-            Assert(!picker.Visible && key.Text == "sk-manually-pasted-fixture", "logout clears the key list while preserving independent manual input");
+            Assert(!picker.Visible && !picker.HasAccount, "logout clears and hides the key list: visible=" + picker.Visible + ", account=" + picker.HasAccount);
+            Assert(key.Text == "sk-manually-pasted-fixture", "logout must preserve independent manual input: length=" + key.Text.Length);
             form.Close();
         }
         using (var gallery = new ThemeGalleryForm(new AppController(data, codex), new PreviewThemeGalleryService(), true))

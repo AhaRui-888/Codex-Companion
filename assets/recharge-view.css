@@ -33,7 +33,13 @@ html.companion-recharge {
 .companion-recharge .payment-methods strong { display: block; font-size: 14px; }
 .companion-recharge .payment-methods small { display: block; font-size: 12px; color: var(--muted); }
 .companion-recharge .pay-icon { width: 26px; height: 26px; flex-shrink: 0; }
-.companion-recharge .recharge-button { width: 100%; min-height: 42px; margin: 0; padding: 10px; border: 0; border-radius: 9px; background: var(--green); color: #fff; font-size: 14px; box-shadow: none; }
+.companion-recharge .recharge-button { width: 100%; min-height: 44px; margin: 0; padding: 10px; border: 1px solid #1968df; border-radius: 9px; background: #1968df; color: #fff; font-size: 14px; font-weight: 600; box-shadow: none; }
+/* The official site's primary-button hover is pale mint. Cover every state
+   explicitly so its light background can never inherit our white label. */
+html.companion-recharge .recharge-button:hover:not(:disabled) { background: #1456bd; border-color: #1456bd; color: #fff; box-shadow: none; transform: none; translate: none; }
+html.companion-recharge .recharge-button:active:not(:disabled) { background: #104797; border-color: #104797; color: #fff; box-shadow: none; transform: none; translate: none; }
+html.companion-recharge .recharge-button:focus-visible { outline: 2px solid #1456bd; outline-offset: 3px; }
+html.companion-recharge .recharge-button:disabled { background: #e7eef8; border-color: #dce4ef; color: #526581; opacity: 1; box-shadow: none; }
 .companion-recharge button { cursor: pointer; }
 .companion-recharge button:disabled { cursor: default; opacity: .6; }
 .companion-recharge button:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
@@ -48,7 +54,14 @@ html.companion-recharge {
 .companion-recharge .payment-checkout-body .key-actions { margin: 0; gap: 8px; display: flex; flex-wrap: wrap; }
 .companion-recharge .key-actions button { display: flex; align-items: center; gap: 4px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; font-size: 12px; color: var(--ink); }
 .companion-recharge .key-actions button.danger { color: #ad3037; }
+.companion-recharge .key-actions button:hover:not(:disabled) { background: #edf4ff; color: #1456bd; }
+.companion-recharge .key-actions button.danger:hover:not(:disabled) { background: #fff0f0; color: #ad3037; border-color: #ad3037; }
+.companion-recharge .payment-countdown { color: #8c5a14; }
+.companion-recharge .tag { background: #edf2f8; color: #526581; }
+.companion-recharge .pay-icon.wechat { background: #edf8f2; color: #167d49; }
+.companion-recharge .pay-icon.alipay { background: #edf4ff; color: #2464b5; }
 .companion-recharge .recharge-error, .companion-recharge .form-error { margin: 10px 0 0; padding: 8px 10px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.companion-recharge .recharge-error, .companion-recharge .form-error, .companion-recharge .tag.danger { background: #fff0f0; color: #ad3037; border-color: #f1c7cc; }
 .companion-recharge .payment-placeholder, .companion-recharge .payment-success { padding: 22px 4px; }
 .companion-recharge .page-wrap:not(:has(.payment-checkout))::after {
   content: "选择金额和支付方式后\A点击生成支付订单，二维码将显示在这里";

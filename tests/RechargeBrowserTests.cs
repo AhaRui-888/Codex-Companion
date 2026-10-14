@@ -185,12 +185,21 @@ internal static class RechargeBrowserTests
         for (int attempt = 0; attempt < 100 && await core.ExecuteScriptAsync("document.documentElement.classList.contains('companion-recharge')") != "true"; attempt++) await Task.Delay(50);
         Assert(await core.ExecuteScriptAsync("document.documentElement.classList.contains('companion-recharge')") == "true", "The official recharge markup must activate the compact view.");
         await CheckViewportAsync(core);
+        await CheckOrderButtonContrastAsync(core, false);
+        string mouse = await core.ExecuteScriptAsync(@"(() => { const r=document.querySelector('.recharge-button').getBoundingClientRect(); return JSON.stringify({type:'mouseMoved',x:r.x+r.width/2,y:r.y+r.height/2}); })()");
+        mouse = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<string>(mouse);
+        await core.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", mouse);
+        await Task.Delay(50);
+        Assert(await core.ExecuteScriptAsync("document.querySelector('.recharge-button').matches(':hover')") == "true", "The order button must actually be hovered for its contrast check.");
+        await CheckOrderButtonContrastAsync(core, false);
         using (var image = File.Create(Path.Combine(data, "recharge-choose.png")))
             await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, image);
+        await core.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", "{\"type\":\"mouseMoved\",\"x\":0,\"y\":0}");
         await core.ExecuteScriptAsync("document.querySelectorAll('.amount-grid button')[2].click()");
         await Task.Delay(100);
         await core.ExecuteScriptAsync("document.querySelector('.recharge-button').click()");
         await Task.Delay(100);
+        await CheckOrderButtonContrastAsync(core, true);
         foreach (var size in new[] { new System.Drawing.Size(900, 590), new System.Drawing.Size(760, 520) })
         {
             dialog.ClientSize = size;
@@ -201,6 +210,22 @@ internal static class RechargeBrowserTests
         }
         await core.ExecuteScriptAsync("document.querySelector('.payment-checkout-body').insertAdjacentHTML('beforeend','<div class=\"form-error\" role=\"alert\">自动查询暂不可用，请点击查询结果重试；请勿重复付款。</div>')");
         await CheckViewportAsync(core);
+    }
+
+    private static async Task CheckOrderButtonContrastAsync(CoreWebView2 core, bool disabled)
+    {
+        string result = await core.ExecuteScriptAsync(@"(() => {
+          const button=document.querySelector('.recharge-button'), s=getComputedStyle(button);
+          const luminance=value => {
+            const c=value.match(/[\d.]+/g).slice(0,3).map(n=>{n=Number(n)/255;return n<=.04045?n/12.92:((n+.055)/1.055)**2.4;});
+            return c[0]*.2126+c[1]*.7152+c[2]*.0722;
+          };
+          const ink=luminance(s.color), fill=luminance(s.backgroundColor), ratio=(Math.max(ink,fill)+.05)/(Math.min(ink,fill)+.05);
+          return JSON.stringify({ok:ratio>=4.5 && Number(s.opacity)===1,ratio,ink:s.color,fill:s.backgroundColor,disabled:button.disabled});
+        })()");
+        Console.WriteLine("Order button contrast: " + result);
+        Assert(result.Contains("\\\"ok\\\":true") && result.Contains("\\\"disabled\\\":" + (disabled ? "true" : "false")),
+            "The order button must retain readable text in its normal, hovered and disabled states: " + result);
     }
 
     private static async Task CheckViewportAsync(CoreWebView2 core)
