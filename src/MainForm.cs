@@ -31,7 +31,10 @@ public class MainForm : Form
     private TextBox apiKeyTextBox;
     private AccountKeyPicker accountKeyPicker;
     private string automaticallyFilledKey;
+    private bool changingApiKeyText;
+    private bool manuallyEditedApiKey;
     private string keysAccountId;
+    private KeyListButton keyListButton;
     private Action layoutCredentialOverlays;
     private Label statusLabel;
     private Label credentialHintLabel;
@@ -56,6 +59,8 @@ public class MainForm : Form
     private bool responsiveLayoutReady;
     private bool updatingResponsiveLayout;
     private bool accountContentNeedsFit;
+    private int accountDisclosureHeightAdded;
+    private int accountDisclosureFittedHeight;
     private Size resizeStartClientSize;
     private bool compactHeader;
     private bool compactActions;
@@ -223,10 +228,11 @@ public class MainForm : Form
                 int statusHeight = Math.Max(PreviewPixels(32), MeasureLabelHeight(statusLabel, innerWidth - PreviewPixels(4)) + PreviewPixels(4));
                 connectionLayout.RowStyles[3].Height = hintHeight;
                 connectionLayout.RowStyles[4].Height = actionsHeight;
-                int labelHeight = accountKeyPicker.HasAccount ? 0 : PreviewPixels(22);
+                int labelHeight = PreviewPixels(22);
                 connectionLayout.RowStyles[0].Height = labelHeight;
-                int keysHeight = accountKeyPicker.RequiredHeight(connectionWidth);
-                connectionLayout.RowStyles[1].Height = keysHeight;
+                connectionLayout.RowStyles[1].Height = PreviewPixels(36);
+                int keysHeight = accountKeyPicker.RequiredHeight(Math.Max(1, connectionWidth - PreviewPixels(108)));
+                connectionLayout.RowStyles[2].Height = keysHeight;
                 rootLayout.RowStyles[0].Height = PreviewPixels(compactHeader ? 74 : 42);
                 rootLayout.RowStyles[ConnectionRow].Height = connectionPanel.Margin.Vertical + connectionPanel.Padding.Vertical
                     + labelHeight + PreviewPixels(36) + hintHeight + actionsHeight + keysHeight;
@@ -281,11 +287,28 @@ public class MainForm : Form
         int availableHeight = working.Height - (Height - ClientSize.Height);
         int nextHeight = Math.Min(rootLayout.Height, availableHeight);
         if (nextHeight <= ClientSize.Height) return;
+        if (accountKeyPicker.Expanded)
+        {
+            if (ClientSize.Height != accountDisclosureFittedHeight) accountDisclosureHeightAdded = 0;
+            accountDisclosureHeightAdded += nextHeight - ClientSize.Height;
+            accountDisclosureFittedHeight = nextHeight;
+        }
         // Content revealed by login or disclosure must fit by default. A later
         // deliberate short resize still has native scrolling on small displays.
         ClientSize = new Size(ClientSize.Width, nextHeight);
         if (Bottom > working.Bottom) Top = Math.Max(working.Top, working.Bottom - Height);
         UpdateResponsiveLayout();
+    }
+
+    private void ReclaimAccountDisclosureHeight()
+    {
+        // Reclaim only the height we added. A window the user resized while
+        // choosing keys retains its deliberate dimensions.
+        if (WindowState != FormWindowState.Normal) return;
+        if (accountDisclosureHeightAdded > 0 && ClientSize.Height == accountDisclosureFittedHeight)
+            ClientSize = new Size(ClientSize.Width, Math.Max(rootLayout.Height, ClientSize.Height - accountDisclosureHeightAdded));
+        accountDisclosureHeightAdded = 0;
+        accountDisclosureFittedHeight = 0;
     }
 
     private static int MeasureTextWidth(Label label)
@@ -356,16 +379,16 @@ public class MainForm : Form
         var layout = connectionLayout;
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        var keyLabel = CreateLabel("mid-web API Key", 12, textColor);
+        var keyLabel = CreateLabel("API Key", 12, textColor);
         keyLabel.Dock = DockStyle.Fill;
         layout.Controls.Add(keyLabel, 0, 0);
         apiKeyTextBox = new CredentialTextBox { HintColor = mutedColor, UseSystemPasswordChar = true, BorderStyle = BorderStyle.None,
             BackColor = inputBack, ForeColor = textColor, Dock = DockStyle.Fill,
-            Font = new Font("Segoe UI", 13, FontStyle.Regular, GraphicsUnit.Pixel), AccessibleName = "mid-web API Key" };
+            Font = new Font("Segoe UI", 13, FontStyle.Regular, GraphicsUnit.Pixel), AccessibleName = "API Key" };
         var keyFrame = new DesktopSurface { Dock = DockStyle.Fill, BackColor = inputBack,
             BorderColor = borderColor, CornerRadius = 6, Padding = new Padding(10, 8, 48, 5), Margin = Padding.Empty };
         apiKeyTextBox.Enter += delegate { keyFrame.BorderColor = accentDark; keyFrame.Invalidate(); };
@@ -377,12 +400,19 @@ public class MainForm : Form
         ((DesktopButton)eyeButton).Borderless = true;
         eyeButton.Dock = DockStyle.None;
         keyFrame.Controls.Add(eyeButton);
+        keyListButton = new KeyListButton { Visible = false, ForeColor = accentDark, BackColor = inputBack,
+            AccessibleName = "展开账户 API Key 列表" };
+        keyListButton.Click += delegate { accountKeyPicker.Toggle(); };
+        keyFrame.Controls.Add(keyListButton);
         layoutCredentialOverlays = delegate {
-            eyeButton.SetBounds(keyFrame.Width - PreviewPixels(45), 3, PreviewPixels(44) - 2, keyFrame.Height - 6);
+            int listWidth = accountKeyPicker != null && accountKeyPicker.HasAccount ? PreviewPixels(28) : 0;
+            keyFrame.Padding = new Padding(PreviewPixels(10), PreviewPixels(8), PreviewPixels(48) + listWidth, PreviewPixels(5));
+            eyeButton.SetBounds(keyFrame.Width - PreviewPixels(45) - listWidth, 3, PreviewPixels(44) - 2, keyFrame.Height - 6);
+            keyListButton.SetBounds(keyFrame.Width - PreviewPixels(28), 3, PreviewPixels(27) - 2, keyFrame.Height - 6);
         };
         keyFrame.Layout += delegate { layoutCredentialOverlays(); };
         keyFrame.Paint += delegate(object sender, PaintEventArgs e) {
-            using (var pen = new Pen(borderColor)) e.Graphics.DrawLine(pen, keyFrame.Width - PreviewPixels(46), 1, keyFrame.Width - PreviewPixels(46), keyFrame.Height - 2);
+            using (var pen = new Pen(borderColor)) e.Graphics.DrawLine(pen, eyeButton.Left - 2, 1, eyeButton.Left - 2, keyFrame.Height - 2);
         };
         applyButton = CreatePrimaryButton("配置并启动");
         applyButton.Click += async delegate { await ApplyAsync(); };
@@ -393,7 +423,7 @@ public class MainForm : Form
         entry.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         entry.Controls.Add(keyFrame, 0, 0);
         entry.Controls.Add(applyButton, 2, 0);
-        layout.Controls.Add(entry, 0, 2);
+        layout.Controls.Add(entry, 0, 1);
         credentialHintLabel = CreateLabel("", 11, mutedColor);
         credentialHintLabel.Dock = DockStyle.Fill;
         credentialHintLabel.TextAlign = ContentAlignment.TopLeft;
@@ -413,40 +443,91 @@ public class MainForm : Form
         layout.Controls.Add(connectionActions, 0, 4);
         accountKeyPicker = new AccountKeyPicker(controller.AccountDirectory);
         accountKeyPicker.HeightChanged += delegate {
-            float previousHeight = connectionLayout.RowStyles[1].Height;
+            float previousHeight = connectionLayout.RowStyles[2].Height;
+            keyListButton.Expanded = accountKeyPicker.Expanded;
+            keyListButton.AccessibleName = accountKeyPicker.Expanded ? "收起账户 API Key 列表" : "展开账户 API Key 列表";
+            keyListButton.Invalidate();
             UpdateResponsiveLayout();
-            if (connectionLayout.RowStyles[1].Height > previousHeight)
+            if (connectionLayout.RowStyles[2].Height > previousHeight)
             {
                 accountContentNeedsFit = true;
                 FitAccountContentHeight();
             }
+            else if (!accountKeyPicker.Expanded) ReclaimAccountDisclosureHeight();
+        };
+        accountKeyPicker.GuidanceChanged += delegate(string text) {
+            if (accountKeyPicker.HasAccount) credentialHintLabel.Text = text;
+            else SetCredentialHint(false);
         };
         accountKeyPicker.KeyChosen += delegate(string value) {
-            if (value != null || apiKeyTextBox.Text == automaticallyFilledKey) apiKeyTextBox.Text = value ?? "";
-            automaticallyFilledKey = value;
+            SetApiKeyText(value ?? "", value);
+            manuallyEditedApiKey = value == null;
+            if (value != null) apiKeyTextBox.Focus();
         };
-        layout.Controls.Add(accountKeyPicker, 0, 1);
+        var choices = new TableLayoutPanel { Dock = DockStyle.Fill, Margin = Padding.Empty, ColumnCount = 2, RowCount = 1 };
+        choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        choices.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+        choices.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        choices.Controls.Add(accountKeyPicker, 0, 0);
+        layout.Controls.Add(choices, 0, 2);
+        apiKeyTextBox.Click += delegate { accountKeyPicker.Open(false); };
+        keyFrame.Click += delegate { accountKeyPicker.Open(false); };
+        apiKeyTextBox.KeyDown += delegate(object sender, KeyEventArgs e) {
+            if (e.KeyCode == Keys.Down && accountKeyPicker.HasAccount)
+            { accountKeyPicker.Open(true); e.SuppressKeyPress = true; }
+            if (e.KeyCode == Keys.Escape && accountKeyPicker.Expanded)
+            { accountKeyPicker.Collapse(); e.SuppressKeyPress = true; }
+        };
+        apiKeyTextBox.TextChanged += delegate {
+            if (changingApiKeyText) return;
+            manuallyEditedApiKey = true;
+            automaticallyFilledKey = null;
+            accountKeyPicker.Collapse();
+        };
+        EventHandler closeChoicesWhenLeaving = delegate {
+            if (!IsHandleCreated || IsDisposed) return;
+            BeginInvoke((Action)delegate {
+                if (!IsDisposed && !keyFrame.ContainsFocus && !accountKeyPicker.ContainsFocus) accountKeyPicker.Collapse();
+            });
+        };
+        keyFrame.Leave += closeChoicesWhenLeaving;
+        accountKeyPicker.Leave += closeChoicesWhenLeaving;
+        Deactivate += delegate { accountKeyPicker.Collapse(); };
         connectionPanel.Controls.Add(layout);
         return connectionPanel;
     }
 
     private void UpdateAccountKeys(string userId, AccountApiKey[] keys, string error)
     {
+        bool changedUser = keysAccountId != userId;
         bool stillUsable = false;
         foreach (var key in keys)
             if (key.Usable && automaticallyFilledKey != null && automaticallyFilledKey.StartsWith(key.Prefix, StringComparison.Ordinal)) stillUsable = true;
         if ((keysAccountId != userId || !stillUsable) && automaticallyFilledKey != null && apiKeyTextBox.Text == automaticallyFilledKey)
-            apiKeyTextBox.Clear();
+            SetApiKeyText("", null);
         if (keysAccountId != userId || !stillUsable) automaticallyFilledKey = null;
+        if (changedUser && apiKeyTextBox.Text.Length == 0) manuallyEditedApiKey = false;
         keysAccountId = userId;
         accountKeyPicker.SetAccount(userId, keys, error);
-        if (!previewMode && userId != null && apiKeyTextBox.Text.Length == 0)
+        keyListButton.Visible = userId != null;
+        layoutCredentialOverlays();
+        if (userId != null && !manuallyEditedApiKey && apiKeyTextBox.Text.Length == 0)
         {
             string existing = null;
-            try { existing = controller.ReadStoredApiKey(); } catch { }
+            if (!previewMode) try { existing = controller.ReadStoredApiKey(); } catch { }
             string available = accountKeyPicker.AvailableKey(existing);
-            if (available != null) { automaticallyFilledKey = available; apiKeyTextBox.Text = available; }
+            if (available != null) SetApiKeyText(available, available);
+            else if (error == null && keys.Length > 0)
+                credentialHintLabel.Text = "官网不返回已有完整 Key；首次粘贴并配置后，下次登录可自动填入。";
         }
+        UpdateResponsiveLayout();
+    }
+
+    private void SetApiKeyText(string value, string automaticValue)
+    {
+        changingApiKeyText = true;
+        try { automaticallyFilledKey = automaticValue; apiKeyTextBox.Text = value; }
+        finally { changingApiKeyText = false; }
     }
 
     private Control BuildStatusBar()
@@ -563,8 +644,13 @@ public class MainForm : Form
             ConfigurationLaunchResult result = await ConfigurationLaunchWorkflow.RunAsync(
                 () => controller.ApplyAsync(settings, newApiKey), () => controller.OpenCodex());
             accountKeyPicker.Remember(newApiKey.Trim());
-            apiKeyTextBox.Clear();
-            automaticallyFilledKey = null;
+            if (accountKeyPicker.HasAccount && newApiKey.Trim().Length > 0)
+            {
+                bool accountKey = accountKeyPicker.ContainsUsableKey(newApiKey.Trim());
+                SetApiKeyText(newApiKey.Trim(), accountKey ? newApiKey.Trim() : null);
+                manuallyEditedApiKey = !accountKey;
+            }
+            else SetApiKeyText("", null);
             SetCredentialHint(true);
             SetStatus(result.Message);
         }
@@ -713,6 +799,9 @@ public class MainForm : Form
         }
         if (accountContentNeedsFit && WindowState == FormWindowState.Normal && IsHandleCreated)
             BeginInvoke((Action)delegate { if (!IsDisposed && accountContentNeedsFit) FitAccountContentHeight(); });
+        if (accountDisclosureHeightAdded > 0 && accountKeyPicker != null && !accountKeyPicker.Expanded
+            && WindowState == FormWindowState.Normal && IsHandleCreated)
+            BeginInvoke((Action)delegate { if (!IsDisposed && !accountKeyPicker.Expanded) ReclaimAccountDisclosureHeight(); });
     }
 
     protected override void OnResizeBegin(EventArgs e)
@@ -747,6 +836,8 @@ public class MainForm : Form
 
     private void SetBusy(bool busy, string message)
     {
+        keyListButton.Enabled = !busy;
+        if (busy) accountKeyPicker.Collapse();
         accountKeyPicker.Enabled = !busy;
         accountPanel.SetOperationsEnabled(!busy);
         applyButton.Enabled = !busy && !previewMode;
@@ -770,6 +861,31 @@ public class MainForm : Form
     private string EmptyTo(string value, string fallback)
     {
         return String.IsNullOrWhiteSpace(value) ? fallback : value;
+    }
+
+    private sealed class KeyListButton : Button
+    {
+        internal bool Expanded;
+        private bool hovered;
+        internal KeyListButton()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            UseVisualStyleBackColor = false;
+            Cursor = Cursors.Hand;
+        }
+        protected override void OnMouseEnter(EventArgs e) { hovered = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hovered = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.Clear(hovered && Enabled ? DesktopPalette.Selected : BackColor);
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            int x = Width / 2, y = Height / 2, direction = Expanded ? -1 : 1;
+            using (var pen = new Pen(Enabled ? ForeColor : DesktopPalette.Muted, 1.5F))
+                e.Graphics.DrawLines(pen, new[] { new Point(x - 5, y - 2 * direction), new Point(x, y + 3 * direction), new Point(x + 5, y - 2 * direction) });
+            if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3));
+        }
     }
 
     private sealed class CredentialTextBox : TextBox

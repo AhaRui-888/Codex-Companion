@@ -68,7 +68,11 @@ internal static class AccountTests
             picker.Remember("sk-fixture-one-secret");
             picker.Remember("sk-fixture-two-secret");
             Assert(picker.AvailableKey(null) == "sk-fixture-one-secret", "a previously saved complete key can autofill");
-            var combo = (System.Windows.Forms.ComboBox)typeof(AccountKeyPicker).GetField("keys", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(picker);
+            Assert(picker.AvailableKey("sk-fixture-two-secret") == "sk-fixture-two-secret",
+                "the current configured key must take priority over another cached account key");
+            Assert(picker.ContainsUsableKey("sk-fixture-two-secret") && !picker.ContainsUsableKey("sk-independent-manual-fixture"),
+                "an independently typed credential must not be classified as an automatically filled account key");
+            var combo = (System.Windows.Forms.ListBox)typeof(AccountKeyPicker).GetField("keys", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(picker);
             string selected = null;
             picker.KeyChosen += value => selected = value;
             combo.SelectedIndex = 1;

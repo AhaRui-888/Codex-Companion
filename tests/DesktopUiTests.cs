@@ -110,10 +110,15 @@ internal static class DesktopUiTests
             Assert(key.Text == "sk-manually-pasted-fixture", "loading account keys must preserve manually pasted input");
             var picker = Field<AccountKeyPicker>(form, "accountKeyPicker");
             Application.DoEvents();
-            Assert(form.ClientSize.Height > 504 && !viewport.VerticalScroll.Visible,
-                "Loading account keys at the default size must fit the complete content automatically.");
+            Assert(!picker.Visible && !picker.Expanded && !viewport.VerticalScroll.Visible,
+                "Loading account keys must keep the single API bar compact until it is opened.");
             Assert(Screen.FromControl(form).WorkingArea.Contains(form.Bounds), "Automatic height must stay within the screen working area.");
             SaveClient(form, Path.Combine(root, "desktop-keys-default.png"));
+            key.Focus();
+            Call(key, "OnClick", EventArgs.Empty);
+            Application.DoEvents();
+            Assert(picker.Visible && picker.Expanded && form.ClientSize.Height > 504 && !viewport.VerticalScroll.Visible,
+                "Clicking the API bar must open the key list and fit the complete content automatically.");
             // A width-only drag fits newly wrapped content; a deliberate short
             // resize still permits scrolling instead of fighting the user.
             Call(form, "OnResizeBegin", EventArgs.Empty);
@@ -130,27 +135,30 @@ internal static class DesktopUiTests
                 foreach (Control control in picker.Controls)
                     if (control.Visible) Assert(picker.ClientRectangle.Contains(control.Bounds), "expanded account key controls must fit at all supported widths: "
                         + control.GetType().Name + " " + control.Bounds + " inside " + picker.ClientRectangle);
-                var keyMessage = Field<Label>(picker, "message");
-                using (var graphics = keyMessage.CreateGraphics())
-                    Assert(graphics.MeasureString(keyMessage.Text, keyMessage.Font, keyMessage.Width).Height <= keyMessage.Height,
-                        "Account key guidance must wrap without clipping.");
+                var choices = Field<ListBox>(picker, "keys");
+                Assert(choices.Items.Count == 2 && choices.Height >= choices.ItemHeight * 2,
+                    "Opening the single API field must show both account keys directly, without another dropdown field.");
+                Rectangle input = picker.RectangleToClient(key.Parent.RectangleToScreen(key.Parent.ClientRectangle));
+                Assert(Math.Abs(input.Left) <= 1 && Math.Abs(input.Width - picker.Width) <= 1 && input.Bottom <= 0,
+                    "The choice list must align with and follow the single API field.");
                 SaveClient(form, Path.Combine(root, "desktop-keys-" + size.Width + ".png"));
             }
-            Field<Button>(picker, "toggle").PerformClick();
-            Assert(picker.LogicalHeight == 32, "account key list must collapse");
+            picker.Toggle();
+            Assert(picker.LogicalHeight == 0 && !picker.Visible, "account key list must collapse into the single API bar");
             form.ClientSize = new Size(930, 504);
-            Field<Button>(picker, "toggle").PerformClick();
+            picker.Toggle();
             Application.DoEvents();
             Assert(!viewport.VerticalScroll.Visible, "Reopening the key list must fit the default window without scrolling.");
             var fittedSize = form.ClientSize;
-            Field<Button>(picker, "toggle").PerformClick();
-            Field<Button>(picker, "toggle").PerformClick();
+            picker.Toggle();
+            picker.Toggle();
             Assert(form.ClientSize == fittedSize, "Repeated disclosure must not accumulate height adjustments.");
             Call(form, "UpdateAccountKeys", null, new AccountApiKey[0], null);
             Assert(!picker.Visible && !picker.HasAccount, "logout clears and hides the key list: visible=" + picker.Visible + ", account=" + picker.HasAccount);
             Assert(key.Text == "sk-manually-pasted-fixture", "logout must preserve independent manual input: length=" + key.Text.Length);
             form.Close();
         }
+        CheckSingleApiField(root);
         using (var gallery = new ThemeGalleryForm(new AppController(data, codex), new PreviewThemeGalleryService(), true))
         {
             gallery.ShowInTaskbar = false;
@@ -304,6 +312,97 @@ internal static class DesktopUiTests
                 Assert(graphics.MeasureString("文字", label.Font).Height <= label.Height, "Gallery card " + name + " must have readable text height.");
         }
     }
+    private static void CheckSingleApiField(string root)
+    {
+        var controller = new AppController(Path.Combine(root, "single-api-settings"), Path.Combine(root, "single-api-codex"));
+        var values = new[] {
+            new AccountApiKey { Id = "one", Name = "工作项目", Prefix = "sk-work-", Status = "ACTIVE" },
+            new AccountApiKey { Id = "two", Name = "个人项目", Prefix = "sk-personal-", Status = "ACTIVE" },
+            new AccountApiKey { Id = "three", Name = "未保存完整密钥", Prefix = "sk-uncached-", Status = "ACTIVE" } };
+        using (var cache = new AccountKeyPicker(controller.AccountDirectory))
+        {
+            cache.SetAccount("fixture-user", values, null);
+            cache.Remember("sk-work-fixture-secret");
+            cache.Remember("sk-personal-fixture-secret");
+        }
+        using (var form = new MainForm(controller, true, new PreviewThemeGalleryService()))
+        {
+            form.ShowInTaskbar = false; form.Opacity = 0; form.Show();
+            var key = Field<TextBox>(form, "apiKeyTextBox");
+            var picker = Field<AccountKeyPicker>(form, "accountKeyPicker");
+            var choices = Field<ListBox>(picker, "keys");
+            var arrow = Field<Button>(form, "keyListButton");
+            var viewport = Field<Panel>(form, "layoutViewport");
+            Field<AccountPanel>(form, "accountPanel").SetPreviewSnapshot(new AccountSnapshot { AccountName = "fixture@example.test", UserId = "fixture-user",
+                Balance = 123.456789M, Reserved = 2.345678M, UpdatedAt = new DateTime(2026, 10, 15, 12, 30, 0) });
+            Call(form, "SetStatus", "界面效果预览 · API Key 列表使用隔离数据。");
+            Call(form, "UpdateAccountKeys", "fixture-user", values, null);
+            Application.DoEvents();
+            Assert(key.Text == "sk-work-fixture-secret" && key.UseSystemPasswordChar && !picker.Expanded && arrow.Visible,
+                "Login must fill the only API field from the encrypted account key and keep choices collapsed.");
+            Assert(!viewport.VerticalScroll.Visible, "The default signed-in API field must fit without scrolling.");
+            Assert(CountControls<TextBox>(Field<Control>(form, "connectionPanel")) == 1
+                && CountControls<ComboBox>(Field<Control>(form, "connectionPanel")) == 0,
+                "The connection panel must have exactly one editable API field and no second selector field.");
+            SaveClient(form, Path.Combine(root, "desktop-single-api-filled.png"));
+            Size compactSize = form.ClientSize;
+            key.Focus(); Call(key, "OnClick", EventArgs.Empty); Application.DoEvents();
+            Assert(picker.Expanded && choices.Items.Count == 3, "Clicking the API field must show all key choices.");
+            SaveClient(form, Path.Combine(root, "desktop-single-api-choices.png"));
+            choices.SelectedIndex = 1;
+            Call(choices, "OnKeyDown", new KeyEventArgs(Keys.Enter)); Application.DoEvents();
+            Assert(key.Text == "sk-personal-fixture-secret" && !picker.Expanded, "Choosing a key must fill the same field and collapse the list.");
+            Assert(form.ClientSize == compactSize, "Selecting a key must reclaim automatic disclosure height and restore the compact window.");
+            key.Clear();
+            Call(form, "UpdateAccountKeys", "fixture-user", values, null);
+            Assert(key.Text.Length == 0, "Refreshing an account must not refill a key deliberately cleared for manual entry.");
+            key.Text = "sk-independent-manual-fixture";
+            Call(form, "UpdateAccountKeys", "fixture-user", values, null);
+            Assert(key.Text == "sk-independent-manual-fixture", "Refreshing must preserve manually entered text.");
+            Call(key, "OnKeyDown", new KeyEventArgs(Keys.Down)); Application.DoEvents();
+            Assert(picker.Expanded && choices.Focused, "Down arrow must expose keyboard-accessible account choices.");
+            choices.SelectedIndex = 2;
+            Call(choices, "OnKeyDown", new KeyEventArgs(Keys.Enter));
+            Assert(key.Text.Length == 0 && Field<Label>(form, "credentialHintLabel").Text.Contains("粘贴完整密钥"),
+                "An uncached key must request its full value without using its prefix as a credential.");
+            Call(choices, "OnKeyDown", new KeyEventArgs(Keys.Escape));
+            Assert(!picker.Expanded, "Escape must close account choices.");
+            key.Text = "sk-independent-manual-fixture";
+            Call(form, "UpdateAccountKeys", null, new AccountApiKey[0], null);
+            Assert(!arrow.Visible && !picker.Expanded && key.Text == "sk-independent-manual-fixture",
+                "Logout removes account choices and preserves independently typed input.");
+            key.Clear();
+            Call(form, "UpdateAccountKeys", "fixture-user", values, null);
+            Assert(key.Text == "sk-work-fixture-secret", "A fresh login must autofill an empty field again.");
+            values[0].Status = "REVOKED";
+            Call(form, "UpdateAccountKeys", "fixture-user", values, null);
+            Assert(key.Text == "sk-personal-fixture-secret", "Revoked automatic keys must be removed and replaced only by another usable full key.");
+            Call(form, "UpdateAccountKeys", "different-user", values, null);
+            Assert(key.Text.Length == 0, "Changing accounts must never retain the prior account's automatically filled secret.");
+            var many = new AccountApiKey[8];
+            for (int i = 0; i < many.Length; i++) many[i] = new AccountApiKey { Id = "key-" + i, Name = "测试项目 " + i, Prefix = "sk-many-" + i + "-", Status = "ACTIVE" };
+            Call(form, "UpdateAccountKeys", "different-user", many, null);
+            arrow.Focus(); arrow.PerformClick();
+            Application.DoEvents();
+            Assert(choices.Items.Count == 8 && choices.Height == choices.ItemHeight * 4,
+                "Large accounts must retain every key in a bounded native scrolling list.");
+            choices.SelectedIndex = 7;
+            Assert(choices.TopIndex > 0, "The last account key must be reachable within the bounded list.");
+            Call(form, "UpdateAccountKeys", "different-user", new AccountApiKey[0], null);
+            Assert(picker.Expanded && Field<Label>(picker, "message").Visible && !choices.Visible,
+                "An empty account must show its guidance without a second API field: expanded=" + picker.Expanded
+                    + ", message=" + Field<Label>(picker, "message").Visible + ", choices=" + choices.Visible);
+            form.Close();
+        }
+    }
+
+    private static int CountControls<T>(Control control) where T : Control
+    {
+        int count = control is T ? 1 : 0;
+        foreach (Control child in control.Controls) count += CountControls<T>(child);
+        return count;
+    }
+
     private static void SaveClient(Form form, string path)
     {
         using (var full = new Bitmap(form.Width, form.Height))
