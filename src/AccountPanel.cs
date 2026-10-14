@@ -29,6 +29,28 @@ internal sealed class AccountPanel : DesktopSurface
     private bool recharging;
     private bool operationsEnabled = true;
     private int generation;
+    private string keysUserId;
+    internal event Action<string, AccountApiKey[], string> ApiKeysChanged;
+
+    private async Task LoadApiKeysAsync()
+    {
+        if (session == null || snapshot == null || ApiKeysChanged == null) return;
+        string userId = snapshot.UserId;
+        var requestSession = session;
+        try
+        {
+            AccountApiKey[] keys = await client.FetchApiKeysAsync(requestSession, lifetime.Token, value => SaveSessionSafely(value));
+            if (IsDisposed || session != requestSession || lifetime.IsCancellationRequested) return;
+            keysUserId = userId;
+            ApiKeysChanged(userId, keys, null);
+        }
+        catch (AccountAuthenticationException) { throw; }
+        catch (Exception)
+        {
+            if (!IsDisposed && !lifetime.IsCancellationRequested)
+                ApiKeysChanged(userId, new AccountApiKey[0], "读取失败，请点击刷新余额重试；仍可手动粘贴。");
+        }
+    }
 
     internal AccountPanel(bool previewMode, string dataDirectory)
         : this(previewMode, new AccountClient(), new AccountSessionStore(dataDirectory)) { }
@@ -147,7 +169,7 @@ internal sealed class AccountPanel : DesktopSurface
         LayoutAccount();
     }
 
-    private void LoginClicked(object sender, EventArgs e)
+    private async void LoginClicked(object sender, EventArgs e)
     {
         if (previewMode || signingIn || fetching || recharging || !operationsEnabled) return;
         signingIn = true;
@@ -168,6 +190,13 @@ internal sealed class AccountPanel : DesktopSurface
             bool saved = SaveSessionSafely(session);
             ShowSnapshot();
             if (!saved) accountStatusLabel.Text = "已登录；登录信息保存失败，下次启动需重新登录。";
+            await LoadApiKeysAsync();
+        }
+        catch (AccountAuthenticationException)
+        {
+            session = null; snapshot = null; generation++;
+            try { store.Clear(); } catch { }
+            if (!IsDisposed) { ShowSignedOut(); accountStatusLabel.Text = "登录已过期，请重新登录。"; }
         }
         catch (Exception error)
         {
@@ -203,6 +232,7 @@ internal sealed class AccountPanel : DesktopSurface
             sessionSaveFailed = !SaveSessionSafely(session);
             ShowSnapshot();
             if (sessionSaveFailed) accountStatusLabel.Text = "余额已更新；登录信息保存失败，下次启动需重新登录。";
+            if (manual || keysUserId != snapshot.UserId) await LoadApiKeysAsync();
         }
         catch (AccountAuthenticationException)
         {
@@ -298,6 +328,8 @@ internal sealed class AccountPanel : DesktopSurface
 
     private void ShowSignedOut()
     {
+        keysUserId = null;
+        if (ApiKeysChanged != null) ApiKeysChanged(null, new AccountApiKey[0], null);
         balanceLabel.Text = "登录后查看余额";
         accountLabel.Text = "xai-tools.cn 账户";
         balanceTooltip.SetToolTip(balanceLabel, null);

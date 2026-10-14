@@ -100,6 +100,26 @@ internal static class DesktopUiTests
             Assert(Field<Label>(form, "statusLabel").Height > 60, "Long operation messages must grow and wrap rather than being clipped.");
             CheckLayout(form);
             Assert(!Directory.Exists(data) && !Directory.Exists(codex), "UI-only interactions must not write configuration.");
+            key.Text = "sk-manually-pasted-fixture";
+            Call(form, "SetStatus", "界面效果预览 · API Key 列表使用隔离数据。");
+            Call(form, "UpdateAccountKeys", "fixture-user", new[] {
+                new AccountApiKey { Id = "one", Name = "工作项目", Prefix = "sk-work-", Status = "ACTIVE" },
+                new AccountApiKey { Id = "two", Name = "个人项目", Prefix = "sk-personal-", Status = "ACTIVE" } }, null);
+            Assert(key.Text == "sk-manually-pasted-fixture", "loading account keys must preserve manually pasted input");
+            var picker = Field<AccountKeyPicker>(form, "accountKeyPicker");
+            foreach (var size in new[] { new Size(930, 700), new Size(660, 820) })
+            {
+                form.ClientSize = size;
+                Application.DoEvents();
+                CheckLayout(form);
+                foreach (Control control in picker.Controls)
+                    if (control.Visible) Assert(picker.ClientRectangle.Contains(control.Bounds), "expanded account key controls must fit at all supported widths");
+                SaveClient(form, Path.Combine(root, "desktop-keys-" + size.Width + ".png"));
+            }
+            Field<Button>(picker, "toggle").PerformClick();
+            Assert(picker.LogicalHeight == 28, "account key list must collapse");
+            Call(form, "UpdateAccountKeys", null, new AccountApiKey[0], null);
+            Assert(!picker.Visible && key.Text == "sk-manually-pasted-fixture", "logout clears the key list while preserving independent manual input");
             form.Close();
         }
         using (var gallery = new ThemeGalleryForm(new AppController(data, codex), new PreviewThemeGalleryService(), true))

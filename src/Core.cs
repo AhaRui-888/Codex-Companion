@@ -459,7 +459,7 @@ public sealed class AppController
         if (settings.Skin != "native" && settings.Skin != "qq") throw new ArgumentException("请选择原生或 QQ 皮肤。");
     }
 
-    string ReadStoredApiKey()
+    internal string ReadStoredApiKey()
     {
         if (File.Exists(KeyPath))
         {

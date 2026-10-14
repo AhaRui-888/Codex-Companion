@@ -98,6 +98,8 @@ foreach ($assembly in @('UIAutomationClient.dll','UIAutomationTypes.dll','Window
     $references += '/r:' + (Join-Path $framework ('WPF\' + $assembly))
 }
 $resources = @("/resource:$updater,CodexCompanionUpdater.exe", "/resource:$(Join-Path $taskRoot 'assets\qq-skin.css'),qq-skin.css")
+$resources += "/resource:$(Join-Path $taskRoot 'assets\recharge-view.js'),recharge-view.js"
+$resources += "/resource:$(Join-Path $taskRoot 'assets\recharge-view.css'),recharge-view.css"
 $resources += '/resource:' + (Join-Path $webViewDependency 'Microsoft.Web.WebView2.Core.dll') + ',WebView2.Microsoft.Web.WebView2.Core.dll'
 $resources += '/resource:' + (Join-Path $webViewDependency 'Microsoft.Web.WebView2.WinForms.dll') + ',WebView2.Microsoft.Web.WebView2.WinForms.dll'
 $resources += '/resource:' + (Join-Path $webViewDependency 'WebView2Loader.x86.dll') + ',WebView2.Loader.x86'
@@ -118,7 +120,7 @@ if ($Test) {
         Select-Object -ExpandProperty FullName
     $testBackend = $sources | Where-Object { (Split-Path $_ -Leaf) -ne 'Program.cs' }
     $runner = Join-Path $intermediate 'Regression.exe'
-    & $compiler /nologo /target:exe /optimize+ /platform:anycpu /langversion:5 "/win32manifest:$(Join-Path $taskRoot 'app.manifest')" "/out:$runner" @references @resources @testBackend @testSources
+    & $compiler /nologo /target:exe /optimize+ /platform:anycpu /langversion:5 "/win32manifest:$(Join-Path $taskRoot 'app.manifest')" "/out:$runner" "/resource:$(Join-Path $taskRoot 'tests\fixtures\recharge.html'),recharge-fixture.html" @references @resources @testBackend @testSources
     if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed.' }
     $testDirectory = Join-Path $taskRoot ('test-output\' + (Get-Date -Format 'yyyyMMdd-HHmmss-ffff'))
     if ($TestSuite -eq 'all') { & $runner $testDirectory }

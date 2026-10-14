@@ -49,6 +49,17 @@ internal sealed class AccountFetchResult
     internal AccountSnapshot Snapshot { get; set; }
 }
 
+internal sealed class AccountApiKey
+{
+    internal string Id, Name, Prefix, Status;
+    internal DateTime? ExpiresUtc;
+    internal bool Usable { get { return Status == "ACTIVE" && (!ExpiresUtc.HasValue || ExpiresUtc.Value > DateTime.UtcNow); } }
+    public override string ToString()
+    {
+        return Name + " · " + Prefix + "… · " + (Usable ? "可用" : Status == "REVOKED" ? "已撤销" : Status == "DISABLED" ? "已停用" : "已过期 / 不可用");
+    }
+}
+
 internal sealed class AccountAuthenticationException : Exception
 {
     internal AccountAuthenticationException() : base("登录已过期，请重新登录。") { }
@@ -146,6 +157,71 @@ internal sealed class AccountClient
         }
     }
 
+    internal async Task<AccountApiKey[]> FetchApiKeysAsync(AccountSession session, CancellationToken token, Action<AccountSession> sessionChanged)
+    {
+        await sessionGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var cookies = Cookies(session);
+            using (var client = Client(cookies))
+            {
+                bool refreshed = false;
+                if (String.IsNullOrEmpty(session.AccessToken))
+                {
+                    await RefreshAsync(client, cookies, token).ConfigureAwait(false);
+                    UpdateSession(session, cookies, sessionChanged);
+                    refreshed = true;
+                }
+                while (true)
+                {
+                    try { return ParseApiKeys(await GetDocumentAsync(client, "api/user/api-keys", token).ConfigureAwait(false)); }
+                    catch (ExpiredSessionException error)
+                    {
+                        if (error.Revoked || refreshed || String.IsNullOrEmpty(session.RefreshToken)) throw new AccountAuthenticationException();
+                    }
+                    await RefreshAsync(client, cookies, token).ConfigureAwait(false);
+                    UpdateSession(session, cookies, sessionChanged);
+                    refreshed = true;
+                }
+            }
+        }
+        finally { sessionGate.Release(); }
+    }
+
+    internal static AccountApiKey[] ParseApiKeys(string body)
+    {
+        if (body == null || body.Length > MaximumResponseBytes) throw new InvalidDataException("API Key 列表无效。");
+        try
+        {
+            var rows = new JavaScriptSerializer { MaxJsonLength = MaximumResponseBytes, RecursionLimit = 16 }.DeserializeObject(body) as object[];
+            if (rows == null || rows.Length > 1000) throw new InvalidDataException("API Key 列表无效。");
+            var result = new List<AccountApiKey>();
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var value in rows)
+            {
+                var row = value as Dictionary<string, object>;
+                if (row == null) throw new InvalidDataException("API Key 列表无效。");
+                string id = Json.Text(row, "id"), name = Json.Text(row, "name"), prefix = Json.Text(row, "keyPrefix"), status = Json.Text(row, "status");
+                if (String.IsNullOrWhiteSpace(id) || id.Length > 128 || !ids.Add(id) || String.IsNullOrWhiteSpace(prefix) || prefix.Length > 128
+                    || String.IsNullOrWhiteSpace(name) || name.Length > 256 || String.IsNullOrWhiteSpace(status)) throw new InvalidDataException("API Key 列表无效。");
+                foreach (char c in prefix) if (c < 33 || c > 126) throw new InvalidDataException("API Key 前缀无效。");
+                DateTime? expires = null;
+                string expiration = Json.Text(row, "expiresAt");
+                if (!String.IsNullOrEmpty(expiration))
+                {
+                    DateTime parsed;
+                    if (!DateTime.TryParse(expiration, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out parsed))
+                        throw new InvalidDataException("API Key 有效期无效。");
+                    expires = parsed;
+                }
+                result.Add(new AccountApiKey { Id = id, Name = name.Replace('\r', ' ').Replace('\n', ' '), Prefix = prefix, Status = status, ExpiresUtc = expires });
+            }
+            return result.ToArray();
+        }
+        catch (ArgumentException) { throw new InvalidDataException("API Key 列表无效。"); }
+        catch (InvalidOperationException) { throw new InvalidDataException("API Key 列表无效。"); }
+    }
+
     internal async Task LogoutAsync(AccountSession session, CancellationToken cancellationToken)
     {
         await sessionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -200,6 +276,9 @@ internal sealed class AccountClient
     }
 
     private static async Task<Dictionary<string, object>> GetAsync(HttpClient client, string route, CancellationToken token)
+    { return ParseObject(await GetDocumentAsync(client, route, token).ConfigureAwait(false)); }
+
+    private static async Task<string> GetDocumentAsync(HttpClient client, string route, CancellationToken token)
     {
         using (HttpResponseMessage response = await client.GetAsync(new Uri(Origin, route), token).ConfigureAwait(false))
         {
@@ -211,7 +290,7 @@ internal sealed class AccountClient
             if ((int)response.StatusCode >= 300 && (int)response.StatusCode < 400)
                 throw new InvalidDataException("账户接口返回了意外跳转，请稍后重试。");
             response.EnsureSuccessStatusCode();
-            return ParseObject(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+            return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
         }
     }
 

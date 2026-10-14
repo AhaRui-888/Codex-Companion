@@ -1,0 +1,68 @@
+/* The official page remains responsible for all payment behavior. */
+html.companion-recharge {
+  --ink: #233044; --muted: #59687e; --green: #1968df;
+  --green-dark: #1456bd; --line: #dce4ef; --panel: #fff;
+  background: #fff !important; color: var(--ink); color-scheme: light !important;
+}
+.companion-recharge body, .companion-recharge #root, .companion-recharge .app-shell,
+.companion-recharge .workspace, .companion-recharge .page-wrap { background: #fff !important; color: var(--ink); }
+.companion-recharge body { margin: 0; background: #fff; font: 14px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif; }
+.companion-recharge *, .companion-recharge *::before, .companion-recharge *::after { box-sizing: border-box; animation: none !important; transition: none !important; }
+.companion-recharge .sidebar, .companion-recharge .topbar, .companion-recharge .backdrop { display: none !important; }
+.companion-recharge .app-shell { min-height: 0; height: 100vh; display: block; }
+.companion-recharge .workspace { margin: 0; height: 100%; width: 100%; }
+.companion-recharge .page-wrap {
+  width: 100%; max-width: none; min-height: 100%; padding: 22px;
+  margin: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto 1fr; gap: 0 24px; align-items: start;
+}
+.companion-recharge .page-wrap > :not(.recharge-panel):not(.payment-checkout):not(.payment-page-notice) { display: none !important; }
+.companion-recharge .payment-page-notice { grid-column: 1 / -1; margin: 0 0 10px; }
+.companion-recharge .recharge-panel { grid-column: 1; grid-row: 2; margin: 0; padding: 0; }
+.companion-recharge .payment-checkout { grid-column: 2; grid-row: 2; margin: 0; border-left: 1px solid var(--line) !important; padding-left: 24px; }
+.companion-recharge .panel { border: 0; border-radius: 0; box-shadow: none; background: transparent; }
+.companion-recharge .panel-head { padding: 0 0 16px; border: 0; gap: 8px; min-height: 32px; }
+.companion-recharge .panel-head h3 { font-size: 19px; margin: 0; font-weight: 600; }
+.companion-recharge .panel-head p, .companion-recharge .secure-pay { display: none; }
+.companion-recharge .amount-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 0; margin: 0 0 26px; }
+.companion-recharge .amount-grid button { height: 62px; padding: 8px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); font-size: 23px; font-weight: 600; background: #fff; }
+.companion-recharge .amount-grid button span { font-size: 14px; margin-right: 3px; }
+.companion-recharge .amount-grid button.selected, .companion-recharge .payment-methods button.selected { border-color: var(--green); background: #edf4ff; color: #1456bd; box-shadow: inset 0 0 0 1px var(--green); }
+.companion-recharge .payment-methods { display: flex; flex-direction: row; gap: 10px; padding: 0; margin: 0 0 22px; flex-wrap: nowrap; }
+.companion-recharge .payment-methods button { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; padding: 12px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: #fff; text-align: left; }
+.companion-recharge .payment-methods strong { display: block; font-size: 14px; }
+.companion-recharge .payment-methods small { display: block; font-size: 12px; color: var(--muted); }
+.companion-recharge .pay-icon { width: 26px; height: 26px; flex-shrink: 0; }
+.companion-recharge .recharge-button { width: 100%; min-height: 42px; margin: 0; padding: 10px; border: 0; border-radius: 9px; background: var(--green); color: #fff; font-size: 14px; box-shadow: none; }
+.companion-recharge button { cursor: pointer; }
+.companion-recharge button:disabled { cursor: default; opacity: .6; }
+.companion-recharge button:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+.companion-recharge button:hover:not(:disabled) { border-color: var(--green); }
+.companion-recharge .payment-checkout .panel-head { align-items: center; padding-bottom: 8px; }
+.companion-recharge .payment-checkout .panel-head h3 { font-size: 16px; }
+.companion-recharge .payment-checkout-body { padding: 0; gap: 6px; }
+.companion-recharge .payment-checkout-amount { font-size: 26px; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.companion-recharge .payment-checkout-body > svg { width: clamp(152px, calc(100vh - 252px), 208px); height: auto; border-radius: 0; flex-shrink: 0; }
+.companion-recharge .payment-checkout-body p { margin: 0; font-size: 12px; line-height: 1.5; }
+.companion-recharge .payment-help { max-width: 340px; color: var(--muted); }
+.companion-recharge .payment-checkout-body .key-actions { margin: 0; gap: 8px; display: flex; flex-wrap: wrap; }
+.companion-recharge .key-actions button { display: flex; align-items: center; gap: 4px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; font-size: 12px; color: var(--ink); }
+.companion-recharge .key-actions button.danger { color: #ad3037; }
+.companion-recharge .recharge-error, .companion-recharge .form-error { margin: 10px 0 0; padding: 8px 10px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.companion-recharge .payment-placeholder, .companion-recharge .payment-success { padding: 22px 4px; }
+.companion-recharge .page-wrap:not(:has(.payment-checkout))::after {
+  content: "选择金额和支付方式后\A点击生成支付订单，二维码将显示在这里";
+  white-space: pre-line; grid-column: 2; grid-row: 2; align-self: stretch;
+  min-height: 300px; display: grid; place-content: center; padding: 20px;
+  border-left: 1px solid var(--line); text-align: center; line-height: 1.9; color: var(--muted); font-size: 13px;
+}
+@media (max-height: 500px) {
+  .companion-recharge .page-wrap { padding: 16px 20px; gap: 0 20px; }
+  .companion-recharge .amount-grid { margin-bottom: 20px; gap: 8px; }
+  .companion-recharge .amount-grid button { height: 54px; }
+  .companion-recharge .payment-methods { margin-bottom: 18px; }
+  .companion-recharge .payment-checkout { padding-left: 20px; }
+  .companion-recharge .payment-checkout-body > svg { width: clamp(140px, calc(100vh - 300px), 178px); }
+  .companion-recharge .payment-checkout-body:has(> svg) .payment-help { display: none; }
+  .companion-recharge .payment-checkout-body .form-error { margin-top: 2px; padding: 4px 6px; font-size: 12px; }
+}

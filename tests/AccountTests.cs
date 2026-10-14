@@ -20,6 +20,9 @@ internal static class AccountTests
         TestRequestsAndRefresh(Path.Combine(root, "rotated-session"));
         TestClosingDuringRefresh(Path.Combine(root, "closing-session"));
         TestRechargeFlow(Path.Combine(root, "recharge-session"));
+        var previousContext = SynchronizationContext.Current;
+        try { TestApiKeys(Path.Combine(root, "account-keys")); }
+        finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
         TestRejectedResponses();
         TestSerializedRefresh();
         Console.WriteLine("Account: official cookie authentication, CNY balance units, refresh rotation, expiry, encrypted persistence and logout passed.");
@@ -41,6 +44,45 @@ internal static class AccountTests
             Reject<InvalidDataException>(() => AccountClient.ParseSnapshot(AccountClient.ParseObject("{\"id\":\"fixture-user\",\"email\":\"fixture@example.test\"}"), AccountClient.ParseObject(invalid)));
         Assert(AccountPanel.MaskAccount("fixture@example.test") == "fi***@example.test", "emails must be masked in the account bar");
         Assert(AccountPanel.MaskAccount("13800000000") == "138****0000", "phone accounts must be masked");
+    }
+
+    private const string KeyFixture = "[{\"id\":\"one\",\"name\":\"工作\",\"keyPrefix\":\"sk-fixture-one-\",\"status\":\"ACTIVE\",\"expiresAt\":null},{\"id\":\"two\",\"name\":\"个人\",\"keyPrefix\":\"sk-fixture-two-\",\"status\":\"ACTIVE\"},{\"id\":\"off\",\"name\":\"已停用\",\"keyPrefix\":\"sk-fixture-off-\",\"status\":\"DISABLED\"}]";
+
+    private static void TestApiKeys(string root)
+    {
+        var entries = AccountClient.ParseApiKeys(KeyFixture);
+        Assert(entries.Length == 3 && entries[0].Usable && !entries[2].Usable, "key metadata must preserve multiple keys and disabled state");
+        foreach (string invalid in new[] { "{}", "[{}]", KeyFixture.Replace("\"two\"", "\"one\""), KeyFixture.Replace("null", "\"bad-date\"") })
+            Reject<InvalidDataException>(() => AccountClient.ParseApiKeys(invalid));
+        var handler = new AccountHandler(true);
+        var client = new AccountClient(cookies => { handler.Cookies = cookies; return handler; }, TimeSpan.FromSeconds(3));
+        var session = Session();
+        string savedRefresh = null;
+        var keys = client.FetchApiKeysAsync(session, CancellationToken.None, updated => savedRefresh = updated.RefreshToken).GetAwaiter().GetResult();
+        Assert(keys.Length == 3 && handler.Refreshes == 1 && savedRefresh == "rotated-refresh" && handler.SafeRequests,
+            "automatic key list loading must preserve HTTPS authentication and single-use session rotation");
+        using (var picker = new AccountKeyPicker(root))
+        {
+            picker.SetAccount("user-one", entries, null);
+            Assert(picker.AvailableKey(null) == null, "prefix-only metadata must never be filled as a credential");
+            picker.Remember("sk-fixture-one-secret");
+            picker.Remember("sk-fixture-two-secret");
+            Assert(picker.AvailableKey(null) == "sk-fixture-one-secret", "a previously saved complete key can autofill");
+            var combo = (System.Windows.Forms.ComboBox)typeof(AccountKeyPicker).GetField("keys", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(picker);
+            string selected = null;
+            picker.KeyChosen += value => selected = value;
+            combo.SelectedIndex = 1;
+            typeof(AccountKeyPicker).GetMethod("SelectKey", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(picker, null);
+            Assert(selected == "sk-fixture-two-secret", "selecting another cached key must use that key");
+            foreach (string path in Directory.GetFiles(Path.Combine(root, "api-key-cache")))
+                Assert(!System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(path)).Contains("sk-fixture"), "cached keys must use DPAPI encryption");
+            picker.SetAccount("user-two", entries, null);
+            Assert(picker.AvailableKey(null) == null, "account changes must not reuse another user's cached keys");
+            picker.SetAccount("user-one", AccountClient.ParseApiKeys(KeyFixture.Replace("ACTIVE", "REVOKED")), null);
+            Assert(picker.AvailableKey(null) == null, "revoked keys must not autofill from the cache");
+            picker.SetAccount(null, new AccountApiKey[0], null);
+            Assert(!picker.HasAccount && picker.LogicalHeight == 0 && picker.AvailableKey(null) == null, "logout must clear the list and disable key selection");
+        }
     }
 
     private static void TestTransport()
@@ -193,6 +235,10 @@ internal static class AccountTests
                 }))
                 {
                     form.Controls.Add(panel);
+                    int keyLists = 0;
+                    panel.ApiKeysChanged += (id, values, error) => {
+                        if (id != null) { Assert(error == null && values.Length == 3, "login must automatically load this user's key list"); keyLists++; }
+                    };
                     form.Shown += async delegate
                     {
                         try
@@ -204,14 +250,14 @@ internal static class AccountTests
                             Assert(opened == 0 && handler.AuthenticatedRequests == 0, "signed-out recharge must do nothing");
                             store.Save(Session());
                             await panel.StartAsync();
-                            Assert(recharge.Enabled, "recharge must enable after login and wallet loading");
+                            Assert(recharge.Enabled && keyLists == 1, "recharge and automatic key loading must follow successful login");
                             panel.SetOperationsEnabled(false);
                             await panel.RechargeAsync();
                             Assert(!recharge.Enabled && opened == 0, "configuration busy state must block recharge");
                             panel.SetOperationsEnabled(true);
                             int requests = handler.AuthenticatedRequests;
                             await panel.RechargeAsync();
-                            Assert(opened == 1 && handler.AuthenticatedRequests == requests + 4,
+                            Assert(opened == 1 && handler.AuthenticatedRequests == requests + 5,
                                 "recharge must validate before opening and fetch the wallet again after closing");
                             var balance = (System.Windows.Forms.Label)typeof(AccountPanel).GetField("balanceLabel",
                                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(panel);
@@ -316,6 +362,7 @@ internal static class AccountTests
             if (RejectAuthentication || (expireAccess && access != "rotated-access"))
                 return Response(HttpStatusCode.Unauthorized, "{\"error\":{\"code\":\"" + (Revoked ? "session_revoked" : "authentication_required") + "\"}}");
             if (path == "/api/auth/me") return Response(HttpStatusCode.OK, "{\"id\":\"fixture-user\",\"email\":\"fixture@example.test\"}");
+            if (path == "/api/user/api-keys") return Response(HttpStatusCode.OK, KeyFixture);
             if (path == "/api/user/wallet") return FailWallet ? Response(HttpStatusCode.ServiceUnavailable, "{}") :
                 Response(HttpStatusCode.OK, "{\"balanceMicroCny\":\"" + WalletMicroCny + "\",\"reservedMicroCny\":\"2000000\"}");
             throw new InvalidOperationException("Unexpected account endpoint.");

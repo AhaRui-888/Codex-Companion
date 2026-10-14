@@ -29,6 +29,9 @@ public class MainForm : Form
     private const float PreviewScale = 1.5F;
 
     private TextBox apiKeyTextBox;
+    private AccountKeyPicker accountKeyPicker;
+    private string automaticallyFilledKey;
+    private string keysAccountId;
     private Action layoutCredentialOverlays;
     private Label statusLabel;
     private Label credentialHintLabel;
@@ -144,6 +147,7 @@ public class MainForm : Form
         rootLayout.Controls.Add(advertisementBanner, 0, AdvertisementRow);
 
         rootLayout.Controls.Add(BuildConnectionSection(), 0, ConnectionRow);
+        accountPanel.ApiKeysChanged += UpdateAccountKeys;
         rootLayout.Controls.Add(BuildStatusBar(), 0, StatusRow);
     }
 
@@ -215,11 +219,13 @@ public class MainForm : Form
                 int actionsHeight = PreviewPixels(compactActions ? 54 : 30);
                 int hintHeight = Math.Max(PreviewPixels(28), MeasureLabelHeight(credentialHintLabel, connectionWidth));
                 int statusHeight = Math.Max(PreviewPixels(32), MeasureLabelHeight(statusLabel, innerWidth - PreviewPixels(4)) + PreviewPixels(4));
-                connectionLayout.RowStyles[2].Height = hintHeight;
-                connectionLayout.RowStyles[3].Height = actionsHeight;
+                connectionLayout.RowStyles[3].Height = hintHeight;
+                connectionLayout.RowStyles[4].Height = actionsHeight;
+                int keysHeight = PreviewPixels(accountKeyPicker.LogicalHeight);
+                connectionLayout.RowStyles[1].Height = keysHeight;
                 rootLayout.RowStyles[0].Height = PreviewPixels(compactHeader ? 74 : 42);
                 rootLayout.RowStyles[ConnectionRow].Height = connectionPanel.Margin.Vertical + connectionPanel.Padding.Vertical
-                    + PreviewPixels(22 + 36) + hintHeight + actionsHeight;
+                    + PreviewPixels(22 + 36) + hintHeight + actionsHeight + keysHeight;
                 rootLayout.RowStyles[StatusRow].Height = statusHeight;
                 contentHeight = rootLayout.Padding.Vertical;
                 foreach (RowStyle row in rootLayout.RowStyles) contentHeight += (int)Math.Ceiling(row.Height);
@@ -326,10 +332,11 @@ public class MainForm : Form
     {
         connectionPanel = new RoundedPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 8),
             BackColor = panelBack, BorderColor = borderColor, CornerRadius = 8, Padding = new Padding(14, 12, 14, 12) };
-        connectionLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Margin = Padding.Empty };
+        connectionLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty };
         var layout = connectionLayout;
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
@@ -366,12 +373,12 @@ public class MainForm : Form
         entry.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         entry.Controls.Add(keyFrame, 0, 0);
         entry.Controls.Add(applyButton, 2, 0);
-        layout.Controls.Add(entry, 0, 1);
+        layout.Controls.Add(entry, 0, 2);
         credentialHintLabel = CreateLabel("", 11, mutedColor);
         credentialHintLabel.Dock = DockStyle.Fill;
         credentialHintLabel.TextAlign = ContentAlignment.TopLeft;
         credentialHintLabel.Padding = new Padding(0, 6, 0, 0);
-        layout.Controls.Add(credentialHintLabel, 0, 2);
+        layout.Controls.Add(credentialHintLabel, 0, 3);
         connectionActions = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
         restartNote = CreateLabel("保存设置后重新启动 Codex", 11, mutedColor);
         openCodexButton = CreateSecondaryButton("打开 Codex");
@@ -383,9 +390,35 @@ public class MainForm : Form
         connectionActions.Controls.Add(restartNote);
         connectionActions.Controls.Add(openCodexButton);
         connectionActions.Controls.Add(restoreButton);
-        layout.Controls.Add(connectionActions, 0, 3);
+        layout.Controls.Add(connectionActions, 0, 4);
+        accountKeyPicker = new AccountKeyPicker(controller.AccountDirectory);
+        accountKeyPicker.HeightChanged += delegate { UpdateResponsiveLayout(); };
+        accountKeyPicker.KeyChosen += delegate(string value) {
+            if (value != null || apiKeyTextBox.Text == automaticallyFilledKey) apiKeyTextBox.Text = value ?? "";
+            automaticallyFilledKey = value;
+        };
+        layout.Controls.Add(accountKeyPicker, 0, 1);
         connectionPanel.Controls.Add(layout);
         return connectionPanel;
+    }
+
+    private void UpdateAccountKeys(string userId, AccountApiKey[] keys, string error)
+    {
+        bool stillUsable = false;
+        foreach (var key in keys)
+            if (key.Usable && automaticallyFilledKey != null && automaticallyFilledKey.StartsWith(key.Prefix, StringComparison.Ordinal)) stillUsable = true;
+        if ((keysAccountId != userId || !stillUsable) && automaticallyFilledKey != null && apiKeyTextBox.Text == automaticallyFilledKey)
+            apiKeyTextBox.Clear();
+        if (keysAccountId != userId || !stillUsable) automaticallyFilledKey = null;
+        keysAccountId = userId;
+        accountKeyPicker.SetAccount(userId, keys, error);
+        if (!previewMode && userId != null && apiKeyTextBox.Text.Length == 0)
+        {
+            string existing = null;
+            try { existing = controller.ReadStoredApiKey(); } catch { }
+            string available = accountKeyPicker.AvailableKey(existing);
+            if (available != null) { automaticallyFilledKey = available; apiKeyTextBox.Text = available; }
+        }
     }
 
     private Control BuildStatusBar()
@@ -501,7 +534,9 @@ public class MainForm : Form
         {
             ConfigurationLaunchResult result = await ConfigurationLaunchWorkflow.RunAsync(
                 () => controller.ApplyAsync(settings, newApiKey), () => controller.OpenCodex());
+            accountKeyPicker.Remember(newApiKey.Trim());
             apiKeyTextBox.Clear();
+            automaticallyFilledKey = null;
             SetCredentialHint(true);
             SetStatus(result.Message);
         }
@@ -669,6 +704,7 @@ public class MainForm : Form
 
     private void SetBusy(bool busy, string message)
     {
+        accountKeyPicker.Enabled = !busy;
         accountPanel.SetOperationsEnabled(!busy);
         applyButton.Enabled = !busy && !previewMode;
         openCodexButton.Enabled = !busy && !previewMode;

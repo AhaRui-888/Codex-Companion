@@ -117,13 +117,18 @@ internal static class OfficialLogin
             MinimumSize = new Size(600, 500);
             Size working = Screen.FromControl(this).WorkingArea.Size;
             Size = new Size(Math.Min(1000, working.Width - 64), Math.Min(800, working.Height - 64));
+            if (rechargeMode)
+            {
+                ClientSize = new Size(Math.Min(900, working.Width - 48), Math.Min(590, working.Height - 80));
+                MinimumSize = SizeFromClientSize(new Size(Math.Min(760, ClientSize.Width), Math.Min(520, ClientSize.Height)));
+            }
             BackColor = Color.FromArgb(246, 248, 251);
             ShowInTaskbar = false;
             var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, rechargeMode ? 0 : 66));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, rechargeMode ? 62 : 82));
             var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(18, 10, 18, 8) };
             header.Controls.Add(new Label { Text = "https://xai-tools.cn", Dock = DockStyle.Bottom, Height = 23, ForeColor = Color.FromArgb(104, 117, 138) });
             header.Controls.Add(new Label { Text = rechargeMode ? "xai-tools.cn 充值中心" : "在 xai-tools.cn 官方页面登录", Dock = DockStyle.Top, Height = 27,
@@ -132,6 +137,7 @@ internal static class OfficialLogin
             browser.Margin = Padding.Empty;
             browser.DefaultBackgroundColor = Color.White;
             var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(18, 8, 18, 8), Margin = Padding.Empty };
+            if (rechargeMode) footer.Padding = new Padding(16, 3, 16, 3);
             footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
             status.Dock = DockStyle.Fill;
@@ -221,6 +227,13 @@ internal static class OfficialLogin
                 core.Settings.AreBrowserAcceleratorKeysEnabled = false;
                 if (rechargeMode)
                 {
+                    // Presentation only: keep the website's original controls, order
+                    // requests, QR generation and payment-state reconciliation intact.
+                    string presentation = PrivateFiles.Utf8.GetString(PrivateFiles.Resource("recharge-view.js"));
+                    string styles = PrivateFiles.Utf8.GetString(PrivateFiles.Resource("recharge-view.css"));
+                    presentation = presentation.Replace("/*COMPANION_STYLE*/", Json.Write(styles));
+                    await core.AddScriptToExecuteOnDocumentCreatedAsync(presentation);
+                    if (closing) return;
                     // Seed only the verified website session into our new private profile.
                     if (!String.IsNullOrEmpty(rechargeSession.AccessToken))
                         WriteSessionCookie(core.CookieManager, AccountClient.AccessCookie, rechargeSession.AccessToken, "xai-tools.cn");

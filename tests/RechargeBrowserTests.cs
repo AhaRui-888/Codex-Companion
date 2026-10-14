@@ -38,6 +38,7 @@ internal static class RechargeBrowserTests
         Exception failure = null;
         bool requestStarted = false, closeRequested = false;
         var streams = new List<Stream>();
+        string publicFixture = Environment.GetEnvironmentVariable("COMPANION_PUBLIC_SITE_FIXTURE");
         Type dialogType = typeof(OfficialLogin).GetNestedType("BrowserLoginForm", BindingFlags.NonPublic);
         Action<AccountSession> changed = value => {
             returned = value == null ? null : value.Copy();
@@ -62,10 +63,30 @@ internal static class RechargeBrowserTests
                         int code = 200;
                         try
                         {
-                            Assert(OfficialLogin.IsOfficialOrigin(request.Request.Uri), "No request may leave the official origin.");
+                            if (!OfficialLogin.IsOfficialOrigin(request.Request.Uri))
+                            {
+                                Assert(publicFixture != null, "Unexpected external request in the isolated fixture.");
+                                // The public site's optional fonts are blocked offline too.
+                                request.Response = core.Environment.CreateWebResourceResponse(null, 204, "Blocked by offline test", "Content-Type: text/plain\r\n");
+                                return;
+                            }
                             string path = new Uri(request.Request.Uri).AbsolutePath;
                             Console.WriteLine("Intercepted fixture request: " + path);
-                            if (path == "/") body = "<!doctype html><html><title>Isolated recharge fixture</title><body>Recharge fixture</body></html>";
+                            if (publicFixture != null && path == "/") body = File.ReadAllText(Path.Combine(publicFixture, "index.html"));
+                            else if (publicFixture != null && path.StartsWith("/assets/", StringComparison.Ordinal))
+                            {
+                                bool script = path.EndsWith(".js", StringComparison.Ordinal);
+                                body = File.ReadAllText(Path.Combine(publicFixture, script ? "app.js" : "app.css"));
+                                headers = script ? "Content-Type: application/javascript\r\n" : "Content-Type: text/css\r\n";
+                            }
+                            else if (path == "/") body = PrivateFiles.Utf8.GetString(PrivateFiles.Resource("recharge-fixture.html"));
+                            else if (path == "/api/auth/me") { headers = "Content-Type: application/json\r\n"; body = "{\"id\":\"fixture-user\",\"phone\":\"13800000000\",\"role\":\"USER\",\"status\":\"ACTIVE\"}"; }
+                            else if (path == "/api/user/wallet") { headers = "Content-Type: application/json\r\n"; body = "{\"balanceMicroCny\":\"50000000\",\"reservedMicroCny\":\"0\"}"; }
+                            else if (path.StartsWith("/api/user/recharge-orders", StringComparison.Ordinal))
+                            {
+                                headers = "Content-Type: application/json\r\n";
+                                body = request.Request.Method == "GET" ? "[]" : "{\"id\":\"fixture-order\",\"orderNo\":\"fixture-only\",\"channel\":\"WECHAT\",\"amountFen\":5000,\"status\":\"PENDING\",\"qrCode\":\"weixin://wxpay/bizpayurl?pr=fictional-not-a-payment\",\"providerStatus\":\"NOTPAY\",\"expiresAt\":\"" + DateTime.UtcNow.AddMinutes(15).ToString("o") + "\",\"createdAt\":\"" + DateTime.UtcNow.ToString("o") + "\"}";
+                            }
                             else if (path == "/api/auth/refresh" || path == "/api/auth/logout")
                             {
                                 string cookies = request.Request.Headers.GetHeader("Cookie");
@@ -109,6 +130,7 @@ internal static class RechargeBrowserTests
                     Assert(core.Source == OfficialLogin.LoginUrl && core.Profile.IsInPrivateModeEnabled,
                         "Recharge must remain open at the official recharge route in a private profile.");
                     Assert(await core.ExecuteScriptAsync("document.cookie") == "\"\"", "Session credentials must remain inaccessible to page scripts.");
+                    if (!logout) await CheckCompactLayoutAsync(dialog, core, data);
                     string route = logout ? "logout" : "refresh";
                     await core.ExecuteScriptAsync("fetch('/api/auth/" + route + "',{method:'POST',credentials:'include'})");
                     await UntilAsync(() => requestStarted || failure != null);
@@ -156,6 +178,41 @@ internal static class RechargeBrowserTests
             if (DateTime.UtcNow > deadline) throw new TimeoutException("The isolated browser did not reach its expected state.");
             await Task.Delay(25);
         }
+    }
+
+    private static async Task CheckCompactLayoutAsync(Form dialog, CoreWebView2 core, string data)
+    {
+        for (int attempt = 0; attempt < 100 && await core.ExecuteScriptAsync("document.documentElement.classList.contains('companion-recharge')") != "true"; attempt++) await Task.Delay(50);
+        Assert(await core.ExecuteScriptAsync("document.documentElement.classList.contains('companion-recharge')") == "true", "The official recharge markup must activate the compact view.");
+        await CheckViewportAsync(core);
+        using (var image = File.Create(Path.Combine(data, "recharge-choose.png")))
+            await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, image);
+        await core.ExecuteScriptAsync("document.querySelectorAll('.amount-grid button')[2].click()");
+        await Task.Delay(100);
+        await core.ExecuteScriptAsync("document.querySelector('.recharge-button').click()");
+        await Task.Delay(100);
+        foreach (var size in new[] { new System.Drawing.Size(900, 590), new System.Drawing.Size(760, 520) })
+        {
+            dialog.ClientSize = size;
+            await Task.Delay(100);
+            await CheckViewportAsync(core);
+            using (var image = File.Create(Path.Combine(data, "recharge-qr-" + size.Width + ".png")))
+                await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, image);
+        }
+        await core.ExecuteScriptAsync("document.querySelector('.payment-checkout-body').insertAdjacentHTML('beforeend','<div class=\"form-error\" role=\"alert\">自动查询暂不可用，请点击查询结果重试；请勿重复付款。</div>')");
+        await CheckViewportAsync(core);
+    }
+
+    private static async Task CheckViewportAsync(CoreWebView2 core)
+    {
+        string result = await core.ExecuteScriptAsync(@"(() => {
+          const visible = el => { const r=el.getBoundingClientRect(); return r.width>0 && r.height>0; };
+          const controls = [...document.querySelectorAll('.amount-grid button,.payment-methods button,.recharge-button,.payment-checkout-body>svg,.payment-checkout button,.form-error')].filter(visible);
+          const outside = controls.filter(el => {const r=el.getBoundingClientRect();return r.left<0 || r.top<0 || r.right>innerWidth+1 || r.bottom>innerHeight+1;});
+          const hidden = ['.sidebar','.topbar','.wallet-hero','.payment-order-list'].every(s => !visible(document.querySelector(s)));
+          return JSON.stringify({ok:hidden && !outside.length && document.documentElement.scrollHeight<=innerHeight+1 && document.documentElement.scrollWidth<=innerWidth+1,width:innerWidth,height:innerHeight,scroll:document.documentElement.scrollHeight,outside:outside.map(x=>x.className)});
+        })()");
+        Assert(result.Contains("\\\"ok\\\":true"), "Recharge amount, methods, QR and error recovery must fit without scrolling: " + result);
     }
 
     private static void Assert(bool condition, string message)
