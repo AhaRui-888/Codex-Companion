@@ -10,11 +10,13 @@ internal sealed class AccountPanel : DesktopSurface
     private readonly bool previewMode;
     private readonly AccountClient client;
     private readonly AccountSessionStore store;
+    private readonly Action<IWin32Window, string, AccountSession, Action<AccountSession>> showRecharge;
     private readonly Label balanceLabel;
     private readonly Label accountLabel;
     private readonly Label accountStatusLabel;
     private readonly Button loginButton;
     private readonly Button refreshBalanceButton;
+    private readonly Button rechargeButton;
     private readonly Button logoutButton;
     private readonly ToolTip balanceTooltip = new ToolTip();
     private readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer { Interval = 60000 };
@@ -24,6 +26,7 @@ internal sealed class AccountPanel : DesktopSurface
     private bool started;
     private bool fetching;
     private bool signingIn;
+    private bool recharging;
     private bool operationsEnabled = true;
     private int generation;
 
@@ -31,10 +34,15 @@ internal sealed class AccountPanel : DesktopSurface
         : this(previewMode, new AccountClient(), new AccountSessionStore(dataDirectory)) { }
 
     internal AccountPanel(bool previewMode, AccountClient client, AccountSessionStore store)
+        : this(previewMode, client, store, OfficialLogin.ShowRecharge) { }
+
+    internal AccountPanel(bool previewMode, AccountClient client, AccountSessionStore store,
+        Action<IWin32Window, string, AccountSession, Action<AccountSession>> showRecharge)
     {
         this.previewMode = previewMode;
         this.client = client;
         this.store = store;
+        this.showRecharge = showRecharge;
         Font = new Font("Segoe UI", 13F, FontStyle.Regular, GraphicsUnit.Pixel);
         Name = "accountPanel";
         AccessibleName = "网站账户与余额";
@@ -52,10 +60,14 @@ internal sealed class AccountPanel : DesktopSurface
         loginButton = Button("登录");
         loginButton.AccessibleName = "登录 xai-tools.cn";
         refreshBalanceButton = Button("刷新余额");
+        rechargeButton = Button("充值");
+        rechargeButton.AccessibleName = "登录后在 xai-tools.cn 充值";
+        balanceTooltip.SetToolTip(rechargeButton, "登录并获取余额后可充值，关闭充值窗口后自动刷新余额。");
         logoutButton = Button("退出登录");
-        Controls.AddRange(new Control[] { balanceLabel, accountLabel, accountStatusLabel, loginButton, refreshBalanceButton, logoutButton });
+        Controls.AddRange(new Control[] { balanceLabel, accountLabel, accountStatusLabel, loginButton, rechargeButton, refreshBalanceButton, logoutButton });
         loginButton.Click += LoginClicked;
         refreshBalanceButton.Click += async delegate { await RefreshAsync(true); };
+        rechargeButton.Click += async delegate { await RechargeAsync(); };
         logoutButton.Click += async delegate { await LogoutAsync(); };
         refreshTimer.Tick += async delegate { await RefreshAsync(false); };
         Resize += delegate { LayoutAccount(); };
@@ -79,21 +91,28 @@ internal sealed class AccountPanel : DesktopSurface
 
     private int Pixels(int value) { return (int)Math.Round(value * Font.Size / 13F); }
 
+    internal int RequiredRowHeight(int width) { return Pixels(width < Pixels(540) ? 124 : 90); }
+
     private void LayoutAccount()
     {
         if (balanceLabel == null || loginButton == null) return;
         int left = Padding.Left, top = Padding.Top;
         int buttonWidth = Pixels(84), gap = Pixels(8), buttonHeight = Pixels(30);
         int buttonRight = ClientSize.Width - Padding.Right;
+        bool compact = ClientSize.Width < Pixels(540);
+        int buttonTop = compact ? top + Pixels(62) : top + Pixels(8);
         if (session == null)
-            loginButton.SetBounds(buttonRight - buttonWidth, top + Pixels(8), buttonWidth, buttonHeight);
+        {
+            loginButton.SetBounds(buttonRight - buttonWidth, buttonTop, buttonWidth, buttonHeight);
+            rechargeButton.SetBounds(loginButton.Left - gap - Pixels(60), buttonTop, Pixels(60), buttonHeight);
+        }
         else
         {
-            logoutButton.SetBounds(buttonRight - buttonWidth, top + Pixels(8), buttonWidth, buttonHeight);
-            refreshBalanceButton.SetBounds(logoutButton.Left - gap - buttonWidth, top + Pixels(8), buttonWidth, buttonHeight);
+            logoutButton.SetBounds(buttonRight - buttonWidth, buttonTop, buttonWidth, buttonHeight);
+            refreshBalanceButton.SetBounds(logoutButton.Left - gap - buttonWidth, buttonTop, buttonWidth, buttonHeight);
+            rechargeButton.SetBounds(refreshBalanceButton.Left - gap - Pixels(60), buttonTop, Pixels(60), buttonHeight);
         }
-        int actionLeft = session == null ? loginButton.Left : refreshBalanceButton.Left;
-        int textWidth = Math.Max(0, actionLeft - gap - left);
+        int textWidth = compact ? ClientSize.Width - Padding.Horizontal : Math.Max(0, rechargeButton.Left - gap - left);
         balanceLabel.SetBounds(left, top, textWidth, Pixels(23));
         accountLabel.SetBounds(left, top + Pixels(24), textWidth, Pixels(17));
         accountStatusLabel.SetBounds(left, top + Pixels(42), ClientSize.Width - Padding.Horizontal, Pixels(16));
@@ -117,19 +136,20 @@ internal sealed class AccountPanel : DesktopSurface
 
     private void SetButtons()
     {
-        bool enabled = operationsEnabled && !previewMode && !fetching && !signingIn && !lifetime.IsCancellationRequested;
+        bool enabled = operationsEnabled && !previewMode && !fetching && !signingIn && !recharging && !lifetime.IsCancellationRequested;
         loginButton.Visible = session == null;
         refreshBalanceButton.Visible = session != null;
         logoutButton.Visible = session != null;
         loginButton.Enabled = enabled;
         refreshBalanceButton.Enabled = enabled;
         logoutButton.Enabled = enabled;
+        rechargeButton.Enabled = enabled && session != null && snapshot != null;
         LayoutAccount();
     }
 
     private void LoginClicked(object sender, EventArgs e)
     {
-        if (previewMode || signingIn || fetching || !operationsEnabled) return;
+        if (previewMode || signingIn || fetching || recharging || !operationsEnabled) return;
         signingIn = true;
         SetButtons();
         AccountFetchResult verified = null;
@@ -163,7 +183,7 @@ internal sealed class AccountPanel : DesktopSurface
 
     internal async Task RefreshAsync(bool manual)
     {
-        if (previewMode || session == null || fetching || signingIn || IsDisposed || lifetime.IsCancellationRequested) return;
+        if (previewMode || session == null || fetching || signingIn || recharging || IsDisposed || lifetime.IsCancellationRequested) return;
         fetching = true;
         int requestGeneration = generation;
         AccountSession requestSession = session;
@@ -208,7 +228,7 @@ internal sealed class AccountPanel : DesktopSurface
 
     internal async Task LogoutAsync()
     {
-        if (previewMode || session == null || signingIn || fetching || IsDisposed) return;
+        if (previewMode || session == null || signingIn || fetching || recharging || IsDisposed) return;
         AccountSession previous = session;
         try { store.Clear(); }
         catch (Exception) { accountStatusLabel.Text = "本机登录信息清除失败，请重试退出。"; return; }
@@ -223,6 +243,57 @@ internal sealed class AccountPanel : DesktopSurface
         catch (Exception)
         { if (!IsDisposed) accountStatusLabel.Text = "已清除本机登录；网络不可用，网站会话未能撤销。"; }
         finally { fetching = false; if (!IsDisposed) SetButtons(); }
+    }
+
+    internal async Task RechargeAsync()
+    {
+        if (previewMode || session == null || snapshot == null || fetching || signingIn || recharging ||
+            !operationsEnabled || IsDisposed || lifetime.IsCancellationRequested) return;
+        recharging = true;
+        SetButtons();
+        bool opened = false;
+        try
+        {
+            accountStatusLabel.Text = "正在验证登录状态…";
+            var current = await client.FetchAsync(session, lifetime.Token, updated => SaveSessionSafely(updated));
+            if (IsDisposed || lifetime.IsCancellationRequested) return;
+            session = current.Session;
+            snapshot = current.Snapshot;
+            SaveSessionSafely(session);
+            ShowSnapshot();
+            // The website exclusively owns refresh-token rotation while its modal is open.
+            showRecharge(FindForm(), store.DirectoryPath, session.Copy(), updated => {
+                if (updated == null)
+                {
+                    session = null;
+                    snapshot = null;
+                    generation++;
+                    try { store.Clear(); } catch { }
+                }
+                else { session = updated.Copy(); SaveSessionSafely(session); }
+            });
+            opened = true;
+        }
+        catch (AccountAuthenticationException)
+        {
+            session = null; snapshot = null; generation++;
+            try { store.Clear(); } catch { }
+            if (!IsDisposed) { ShowSignedOut(); accountStatusLabel.Text = "登录已过期，请重新登录后充值。"; }
+        }
+        catch (Exception)
+        { if (!IsDisposed) accountStatusLabel.Text = "无法打开充值，请检查网络后重试。"; }
+        finally
+        {
+            recharging = false;
+            if (!IsDisposed) SetButtons();
+        }
+        if (!opened || IsDisposed || lifetime.IsCancellationRequested) return;
+        if (session == null)
+        {
+            ShowSignedOut();
+            accountStatusLabel.Text = "登录已失效，请重新登录以查看最新余额。";
+        }
+        else await RefreshAsync(true);
     }
 
     private void ShowSignedOut()

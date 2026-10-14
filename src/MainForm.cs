@@ -37,7 +37,6 @@ public class MainForm : Form
     private Button restoreButton;
     private Button appearanceButton;
     private Button officialWebsiteButton;
-    private Button rechargeButton;
     private Button updateButton;
     private Button eyeButton;
     private TableLayoutPanel rootLayout;
@@ -209,6 +208,7 @@ public class MainForm : Form
             for (int pass = 0; pass < 2; pass++)
             {
                 int innerWidth = Math.Max(1, contentWidth - rootLayout.Padding.Horizontal);
+                rootLayout.RowStyles[1].Height = accountPanel.RequiredRowHeight(innerWidth);
                 compactHeader = innerWidth < brandWidth + domainWidth + linksWidth + PreviewPixels(12);
                 int connectionWidth = innerWidth - connectionPanel.Padding.Horizontal;
                 compactActions = connectionWidth < Math.Max(noteWidth + buttonsWidth, PreviewPixels(460));
@@ -228,12 +228,21 @@ public class MainForm : Form
                 if (nextWidth == contentWidth) break;
                 contentWidth = nextWidth;
             }
-            layoutViewport.AutoScrollMinSize = new Size(0, contentHeight);
-            int availableWidth = ClientSize.Width - (needsScroll ? SystemInformation.VerticalScrollBarWidth : 0);
-            int x = Math.Max(0, (availableWidth - contentWidth) / 2);
-            int y = needsScroll ? layoutViewport.AutoScrollPosition.Y : Math.Max(0, (ClientSize.Height - contentHeight) / 2);
-            rootLayout.SetBounds(x, y, contentWidth, contentHeight);
-            rootLayout.ResumeLayout(true);
+            layoutViewport.SuspendLayout();
+            try
+            {
+                // Reset the old scroll offset before centering a now-fitting group.
+                // Otherwise WinForms includes that offset in the virtual extent and
+                // can retain both scrollbars after a short window is made taller.
+                if (!needsScroll) layoutViewport.AutoScrollPosition = Point.Empty;
+                layoutViewport.AutoScrollMinSize = new Size(0, contentHeight);
+                int availableWidth = ClientSize.Width - (needsScroll ? SystemInformation.VerticalScrollBarWidth : 0);
+                int x = Math.Max(0, (availableWidth - contentWidth) / 2);
+                int y = needsScroll ? layoutViewport.AutoScrollPosition.Y : Math.Max(0, (ClientSize.Height - contentHeight) / 2);
+                rootLayout.SetBounds(x, y, contentWidth, contentHeight);
+                rootLayout.ResumeLayout(true);
+            }
+            finally { layoutViewport.ResumeLayout(true); }
 
             int headerY = PreviewPixels(5);
             brandLabel.SetBounds(0, headerY, brandWidth, PreviewPixels(28));
@@ -282,13 +291,7 @@ public class MainForm : Form
         officialWebsiteButton.Dock = DockStyle.None;
         officialWebsiteButton.Margin = new Padding(4, 0, 0, 0);
         officialWebsiteButton.Click += OpenOfficialWebsite;
-        rechargeButton = CreateSecondaryButton("充值中心");
-        rechargeButton.Size = new Size(80, 28);
-        rechargeButton.Dock = DockStyle.None;
-        rechargeButton.Margin = new Padding(4, 0, 0, 0);
-        rechargeButton.Click += OpenRecharge;
         headerLinks.Controls.Add(officialWebsiteButton);
-        headerLinks.Controls.Add(rechargeButton);
         updateButton = CreateSecondaryButton("检查更新");
         updateButton.Size = new Size(98, 28);
         updateButton.Dock = DockStyle.None;
@@ -429,7 +432,6 @@ public class MainForm : Form
         applyButton.Enabled = enabled;
         openCodexButton.Enabled = enabled;
         restoreButton.Enabled = enabled;
-        rechargeButton.Enabled = enabled;
         appearanceButton.Enabled = true;
         updateButton.Enabled = enabled;
     }
@@ -587,18 +589,6 @@ public class MainForm : Form
         }
     }
 
-    private void OpenRecharge(object sender, EventArgs e)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo(AppController.OfficialRechargeUrl) { UseShellExecute = true });
-            SetStatus("已在浏览器打开充值中心。");
-        }
-        catch (Exception ex)
-        {
-            SetStatus("打开充值中心失败：" + ex.Message);
-        }
-    }
 
     private async Task LoadAdvertisementsAsync()
     {
@@ -685,7 +675,6 @@ public class MainForm : Form
         restoreButton.Enabled = !busy && !previewMode;
         appearanceButton.Enabled = !busy;
         officialWebsiteButton.Enabled = !busy;
-        rechargeButton.Enabled = !busy && !previewMode;
         updateButton.Enabled = !busy && !previewMode && !checkingUpdate;
         if (!String.IsNullOrEmpty(message))
         {

@@ -3,7 +3,7 @@ param(
     [switch]$Package,
     [string]$OutputDirectory = '',
     [string]$IntermediateDirectory = '',
-    [ValidateSet('all', 'ui', 'advertisements', 'gallery', 'restart', 'update', 'relay', 'account')]
+    [ValidateSet('all', 'ui', 'advertisements', 'gallery', 'restart', 'update', 'relay', 'account', 'recharge-browser')]
     [string]$TestSuite = 'all'
 )
 $ErrorActionPreference = 'Stop'

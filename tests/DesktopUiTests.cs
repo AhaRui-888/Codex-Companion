@@ -46,6 +46,10 @@ internal static class DesktopUiTests
             CheckLayout(form);
             SaveClient(form, Path.Combine(root, "desktop-default.png"));
             var account = Field<AccountPanel>(form, "accountPanel");
+            foreach (Control link in Field<FlowLayoutPanel>(form, "headerLinks").Controls)
+                Assert(!link.Text.Contains("充值"), "Recharge must only be offered in the account panel.");
+            Assert(Field<Button>(account, "rechargeButton").Visible && !Field<Button>(account, "rechargeButton").Enabled,
+                "Recharge must be disabled before login.");
             Assert(Field<Button>(account, "loginButton").Visible && !Field<Button>(account, "loginButton").Enabled,
                 "Signed-out preview must show login without opening a real login session.");
             account.SetPreviewSnapshot(new AccountSnapshot { AccountName = "fixture@example.test", UserId = "fixture-user",
@@ -145,7 +149,7 @@ internal static class DesktopUiTests
     {
         var root = Field<TableLayoutPanel>(form, "rootLayout");
         var viewport = Field<Panel>(form, "layoutViewport");
-        foreach (string field in new[] { "apiKeyTextBox", "eyeButton", "appearanceButton", "applyButton", "openCodexButton", "restoreButton", "officialWebsiteButton", "rechargeButton", "updateButton" })
+        foreach (string field in new[] { "apiKeyTextBox", "eyeButton", "appearanceButton", "applyButton", "openCodexButton", "restoreButton", "officialWebsiteButton", "updateButton" })
         {
             var control = Field<Control>(form, field);
             Assert(control.Visible && control.Width > 24 && control.Height >= 18, field + " must remain visible and usable.");
@@ -187,7 +191,9 @@ internal static class DesktopUiTests
         Rectangle updateBounds = form.RectangleToClient(Field<Button>(form, "updateButton").RectangleToScreen(Field<Button>(form, "updateButton").ClientRectangle));
         Assert(Math.Abs(appearanceBounds.Top - updateBounds.Top) <= 2 && appearanceBounds.Bottom < keyBounds.Top,
             "Appearance settings must stay in the top action bar.");
-        Assert(!viewport.HorizontalScroll.Visible, "Supported sizes must not need horizontal scrolling.");
+        Assert(!viewport.HorizontalScroll.Visible, "Supported sizes must not need horizontal scrolling: form=" + form.ClientSize
+            + ", viewport=" + viewport.ClientSize + ", root=" + root.Bounds + ", scroll=" + viewport.AutoScrollPosition
+            + ", display=" + viewport.DisplayRectangle + ", minimum=" + viewport.AutoScrollMinSize);
         Rectangle brandBounds = root.RectangleToClient(brands[0].RectangleToScreen(brands[0].ClientRectangle));
         Rectangle domainBounds = root.RectangleToClient(domain.RectangleToScreen(domain.ClientRectangle));
         Rectangle headerActionBounds = root.RectangleToClient(Field<Button>(form, "appearanceButton").RectangleToScreen(Field<Button>(form, "appearanceButton").ClientRectangle));
@@ -198,7 +204,7 @@ internal static class DesktopUiTests
             Assert(graphics.MeasureString(hint.Text, hint.Font, hint.Width - hint.Padding.Horizontal).Height <= hint.Height - hint.Padding.Vertical + 1,
                 "Credential guidance must have enough height to wrap at narrow widths.");
         var account = Field<AccountPanel>(form, "accountPanel");
-        foreach (string field in new[] { "balanceLabel", "accountLabel", "accountStatusLabel", "loginButton", "refreshBalanceButton", "logoutButton" })
+        foreach (string field in new[] { "balanceLabel", "accountLabel", "accountStatusLabel", "loginButton", "rechargeButton", "refreshBalanceButton", "logoutButton" })
         {
             var control = Field<Control>(account, field);
             if (!control.Visible) continue;
@@ -208,6 +214,12 @@ internal static class DesktopUiTests
                     Assert(graphics.MeasureString(control.Text, control.Font).Width <= control.Width - 12,
                         "Account " + field + " must retain its complete action label.");
         }
+        var balance = Field<Label>(account, "balanceLabel");
+        var recharge = Field<Button>(account, "rechargeButton");
+        Assert(!balance.Bounds.IntersectsWith(recharge.Bounds), "Recharge must never overlap the balance.");
+        using (var graphics = balance.CreateGraphics())
+            Assert(graphics.MeasureString(balance.Text, balance.Font).Width <= balance.Width,
+                "The balance must remain readable beside or above recharge actions.");
     }
     private static void CheckAppearanceLayout(ThemeGalleryForm form)
     {

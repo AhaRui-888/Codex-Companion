@@ -19,6 +19,7 @@ internal static class AccountTests
         TestSessionStore(Path.Combine(root, "encrypted-session"));
         TestRequestsAndRefresh(Path.Combine(root, "rotated-session"));
         TestClosingDuringRefresh(Path.Combine(root, "closing-session"));
+        TestRechargeFlow(Path.Combine(root, "recharge-session"));
         TestRejectedResponses();
         TestSerializedRefresh();
         Console.WriteLine("Account: official cookie authentication, CNY balance units, refresh rotation, expiry, encrypted persistence and logout passed.");
@@ -163,6 +164,80 @@ internal static class AccountTests
         if (failure != null) throw new InvalidOperationException("Account shutdown regression failed.", failure);
     }
 
+    private static void TestRechargeFlow(string root)
+    {
+        Exception failure = null;
+        var thread = new Thread(delegate()
+        {
+            try
+            {
+                var store = new AccountSessionStore(root);
+                var handler = new AccountHandler(false);
+                var client = new AccountClient(cookies => { handler.Cookies = cookies; return handler; }, TimeSpan.FromSeconds(3));
+                int opened = 0;
+                AccountPanel panel = null;
+                using (var form = new System.Windows.Forms.Form { ShowInTaskbar = false, Opacity = 0 })
+                using (panel = new AccountPanel(false, client, store, (owner, directory, session, changed) => {
+                    opened++;
+                    Assert(session.AccessToken == "fixture-access", "recharge must receive the current authenticated session");
+                    int requests = handler.AuthenticatedRequests;
+                    panel.RefreshAsync(false).GetAwaiter().GetResult();
+                    panel.RechargeAsync().GetAwaiter().GetResult();
+                    panel.LogoutAsync().GetAwaiter().GetResult();
+                    Assert(handler.AuthenticatedRequests == requests && opened == 1 && handler.Logouts == 0,
+                        "the recharge window must exclusively own session refresh and prevent duplicate windows");
+                    handler.ExpectedAccess = "recharge-access";
+                    handler.WalletMicroCny = "50000000";
+                    changed(new AccountSession { AccessToken = "recharge-access", RefreshToken = "recharge-refresh" });
+                    Assert(store.Load().RefreshToken == "recharge-refresh", "website cookie rotation must persist before closing");
+                }))
+                {
+                    form.Controls.Add(panel);
+                    form.Shown += async delegate
+                    {
+                        try
+                        {
+                            var recharge = (System.Windows.Forms.Button)typeof(AccountPanel).GetField("rechargeButton",
+                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(panel);
+                            Assert(!recharge.Enabled, "signed-out accounts cannot recharge");
+                            await panel.RechargeAsync();
+                            Assert(opened == 0 && handler.AuthenticatedRequests == 0, "signed-out recharge must do nothing");
+                            store.Save(Session());
+                            await panel.StartAsync();
+                            Assert(recharge.Enabled, "recharge must enable after login and wallet loading");
+                            panel.SetOperationsEnabled(false);
+                            await panel.RechargeAsync();
+                            Assert(!recharge.Enabled && opened == 0, "configuration busy state must block recharge");
+                            panel.SetOperationsEnabled(true);
+                            int requests = handler.AuthenticatedRequests;
+                            await panel.RechargeAsync();
+                            Assert(opened == 1 && handler.AuthenticatedRequests == requests + 4,
+                                "recharge must validate before opening and fetch the wallet again after closing");
+                            var balance = (System.Windows.Forms.Label)typeof(AccountPanel).GetField("balanceLabel",
+                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(panel);
+                            Assert(balance.Text.Contains("48.00") && recharge.Enabled,
+                                "closing recharge must display the new available balance and restore actions");
+                            handler.RejectAuthentication = true;
+                            handler.Revoked = true;
+                            await panel.RechargeAsync();
+                            Assert(opened == 1 && !recharge.Enabled && store.Load() == null,
+                                "expired sessions must return to login instead of opening recharge");
+                        }
+                        catch (Exception error) { failure = error; }
+                        finally { form.Close(); }
+                    };
+                    System.Windows.Forms.Application.Run(form);
+                }
+            }
+            catch (Exception error) { failure = error; }
+        });
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert(thread.Join(TimeSpan.FromSeconds(15)), "the recharge workflow regression must complete promptly");
+        if (failure != null) throw new InvalidOperationException("Recharge workflow failed.", failure);
+    }
+
     private static void TestRejectedResponses()
     {
         foreach (bool revoked in new[] { true, false })
@@ -207,6 +282,8 @@ internal static class AccountTests
         internal int Refreshes, Logouts, AuthenticatedRequests;
         internal bool SafeRequests = true, Csrf, FailWallet, RejectAuthentication, Revoked, ExpireLogout;
         internal Action AfterRefreshResponse;
+        internal string WalletMicroCny = "10000000";
+        internal string ExpectedAccess;
         private readonly bool expireAccess;
         internal AccountHandler(bool expireAccess) { this.expireAccess = expireAccess; }
 
@@ -235,11 +312,12 @@ internal static class AccountTests
             }
             AuthenticatedRequests++;
             string access = Cookies.GetCookies(new Uri("https://xai-tools.cn/"))[AccountClient.AccessCookie].Value;
+            if (ExpectedAccess != null) Assert(access == ExpectedAccess, "wallet refresh must use cookies returned from recharge");
             if (RejectAuthentication || (expireAccess && access != "rotated-access"))
                 return Response(HttpStatusCode.Unauthorized, "{\"error\":{\"code\":\"" + (Revoked ? "session_revoked" : "authentication_required") + "\"}}");
             if (path == "/api/auth/me") return Response(HttpStatusCode.OK, "{\"id\":\"fixture-user\",\"email\":\"fixture@example.test\"}");
             if (path == "/api/user/wallet") return FailWallet ? Response(HttpStatusCode.ServiceUnavailable, "{}") :
-                Response(HttpStatusCode.OK, "{\"balanceMicroCny\":\"10000000\",\"reservedMicroCny\":\"2000000\"}");
+                Response(HttpStatusCode.OK, "{\"balanceMicroCny\":\"" + WalletMicroCny + "\",\"reservedMicroCny\":\"2000000\"}");
             throw new InvalidOperationException("Unexpected account endpoint.");
         }
         protected override void Dispose(bool disposing) { /* Shared fixture simulates successive transports. */ }

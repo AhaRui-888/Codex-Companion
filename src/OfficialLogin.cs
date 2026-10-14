@@ -33,6 +33,24 @@ internal static class OfficialLogin
             return dialog.ShowDialog(owner) == DialogResult.OK ? dialog.ValidatedSession : null;
     }
 
+    internal static void ShowRecharge(IWin32Window owner, string dataDirectory, AccountSession session,
+        Action<AccountSession> sessionChanged)
+    {
+        if (session == null) throw new AccountAuthenticationException();
+        session.Validate();
+        if (sessionChanged == null) throw new ArgumentNullException("sessionChanged");
+        WebViewRuntime.InstallAssemblyResolver();
+        ShowRechargeBrowser(owner, Path.GetFullPath(dataDirectory), session, sessionChanged);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ShowRechargeBrowser(IWin32Window owner, string dataDirectory, AccountSession session,
+        Action<AccountSession> sessionChanged)
+    {
+        using (var dialog = new BrowserLoginForm(dataDirectory, null, session.Copy(), sessionChanged))
+            dialog.ShowDialog(owner);
+    }
+
     internal static bool IsOfficialOrigin(string value)
     {
         Uri uri;
@@ -53,6 +71,14 @@ internal static class OfficialLogin
     {
         private readonly string dataDirectory;
         private readonly Func<AccountSession, CancellationToken, Task<bool>> validateSession;
+        private readonly bool rechargeMode;
+        private readonly Action<AccountSession> sessionChanged;
+        private AccountSession rechargeSession;
+        private bool rechargeSessionReady;
+        private bool capturingRechargeSession;
+        private bool rechargeCloseRequested;
+        private bool rechargeCloseReady;
+        private int authenticationRequests;
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private readonly CancellationToken closeToken;
         private readonly System.Windows.Forms.Timer cookieTimer = new System.Windows.Forms.Timer();
@@ -73,11 +99,18 @@ internal static class OfficialLogin
         internal AccountSession ValidatedSession { get; private set; }
 
         internal BrowserLoginForm(string dataDirectory, Func<AccountSession, CancellationToken, Task<bool>> validateSession)
+            : this(dataDirectory, validateSession, null, null) { }
+
+        internal BrowserLoginForm(string dataDirectory, Func<AccountSession, CancellationToken, Task<bool>> validateSession,
+            AccountSession rechargeSession, Action<AccountSession> sessionChanged)
         {
             this.dataDirectory = dataDirectory;
             this.validateSession = validateSession;
+            this.rechargeSession = rechargeSession;
+            this.sessionChanged = sessionChanged;
+            rechargeMode = rechargeSession != null;
             closeToken = cancellation.Token;
-            Text = "登录 xai-tools.cn · Codex Companion";
+            Text = rechargeMode ? "充值 xai-tools.cn · Codex Companion" : "登录 xai-tools.cn · Codex Companion";
             Font = new Font("Microsoft YaHei UI", 9F);
             AutoScaleMode = AutoScaleMode.Dpi;
             StartPosition = FormStartPosition.CenterParent;
@@ -93,7 +126,7 @@ internal static class OfficialLogin
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
             var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(18, 10, 18, 8) };
             header.Controls.Add(new Label { Text = "https://xai-tools.cn", Dock = DockStyle.Bottom, Height = 23, ForeColor = Color.FromArgb(104, 117, 138) });
-            header.Controls.Add(new Label { Text = "在 xai-tools.cn 官方页面登录", Dock = DockStyle.Top, Height = 27,
+            header.Controls.Add(new Label { Text = rechargeMode ? "xai-tools.cn 充值中心" : "在 xai-tools.cn 官方页面登录", Dock = DockStyle.Top, Height = 27,
                 Font = new Font(Font.FontFamily, 11F, FontStyle.Bold), ForeColor = Color.FromArgb(35, 48, 68) });
             browser.Dock = DockStyle.Fill;
             browser.Margin = Padding.Empty;
@@ -104,9 +137,9 @@ internal static class OfficialLogin
             status.Dock = DockStyle.Fill;
             status.ForeColor = Color.FromArgb(104, 117, 138);
             status.TextAlign = ContentAlignment.MiddleLeft;
-            status.Text = "正在打开官方登录页面…";
+            status.Text = rechargeMode ? "正在打开充值页面…" : "正在打开官方登录页面…";
             var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = Padding.Empty };
-            var cancel = new Button { Text = "取消", AutoSize = true, Height = 29, DialogResult = DialogResult.Cancel };
+            var cancel = new Button { Text = rechargeMode ? "关闭并刷新余额" : "取消", AutoSize = true, Height = 29, DialogResult = DialogResult.Cancel };
             retry.Text = "重试";
             retry.AutoSize = true;
             retry.Height = 29;
@@ -126,12 +159,15 @@ internal static class OfficialLogin
             Controls.Add(layout);
             CancelButton = cancel;
             cookieTimer.Interval = 1500;
-            cookieTimer.Tick += async delegate { await CheckSessionAsync(false); };
+            cookieTimer.Tick += async delegate {
+                if (rechargeMode) await CaptureRechargeSessionAsync();
+                else await CheckSessionAsync(false);
+            };
             Shown += async delegate { await InitializeAsync(); };
             retry.Click += async delegate
             {
                 if (!initialized) await InitializeAsync();
-                else if (!documentLoaded) browser.CoreWebView2.Navigate(LoginUrl);
+                else if (rechargeMode || !documentLoaded) browser.CoreWebView2.Navigate(LoginUrl);
                 else await CheckSessionAsync(true);
             };
             installRuntime.Click += delegate
@@ -147,7 +183,7 @@ internal static class OfficialLogin
             initializing = true;
             retry.Visible = false;
             installRuntime.Visible = false;
-            status.Text = "正在打开 xai-tools.cn 官方登录页面…";
+            status.Text = rechargeMode ? "正在打开 xai-tools.cn 充值页面…" : "正在打开 xai-tools.cn 官方登录页面…";
             try
             {
                 // SetLoaderDllFolderPath is process-wide and must be set before the first SDK call.
@@ -183,6 +219,20 @@ internal static class OfficialLogin
                 core.Settings.IsPasswordAutosaveEnabled = false;
                 core.Settings.IsGeneralAutofillEnabled = false;
                 core.Settings.AreBrowserAcceleratorKeysEnabled = false;
+                if (rechargeMode)
+                {
+                    // Seed only the verified website session into our new private profile.
+                    if (!String.IsNullOrEmpty(rechargeSession.AccessToken))
+                        WriteSessionCookie(core.CookieManager, AccountClient.AccessCookie, rechargeSession.AccessToken, "xai-tools.cn");
+                    if (!String.IsNullOrEmpty(rechargeSession.RefreshToken))
+                        WriteSessionCookie(core.CookieManager, AccountClient.RefreshCookie, rechargeSession.RefreshToken, "xai-tools.cn");
+                    rechargeSessionReady = true;
+                    core.AddWebResourceRequestedFilter(Origin + "/api/auth/*", CoreWebView2WebResourceContext.All);
+                    core.WebResourceRequested += delegate(object sender, CoreWebView2WebResourceRequestedEventArgs args)
+                    {
+                        if (IsAuthenticationMutation(args.Request.Uri)) authenticationRequests++;
+                    };
+                }
                 core.NavigationStarting += delegate(object sender, CoreWebView2NavigationStartingEventArgs args)
                 {
                     if (!IsOfficialOrigin(args.Uri)) { args.Cancel = true; return; }
@@ -198,9 +248,10 @@ internal static class OfficialLogin
                         retry.Visible = true;
                         return;
                     }
-                    status.Text = "请在官方页面完成登录。登录成功后将自动读取余额。";
+                    status.Text = rechargeMode ? "完成充值后关闭此窗口，余额将自动刷新。" : "请在官方页面完成登录。登录成功后将自动读取余额。";
                     retry.Visible = false;
-                    await CheckSessionAsync(true);
+                    if (rechargeMode) await CaptureRechargeSessionAsync();
+                    else await CheckSessionAsync(true);
                 };
                 core.NewWindowRequested += delegate(object sender, CoreWebView2NewWindowRequestedEventArgs args) { args.Handled = true; };
                 core.DownloadStarting += delegate(object sender, CoreWebView2DownloadStartingEventArgs args) { args.Cancel = true; args.Handled = true; };
@@ -208,6 +259,15 @@ internal static class OfficialLogin
                 core.ServerCertificateErrorDetected += delegate(object sender, CoreWebView2ServerCertificateErrorDetectedEventArgs args) { args.Action = CoreWebView2ServerCertificateErrorAction.Cancel; };
                 core.WebResourceResponseReceived += async delegate(object sender, CoreWebView2WebResourceResponseReceivedEventArgs args)
                 {
+                    if (rechargeMode)
+                    {
+                        if (IsAuthenticationMutation(args.Request.Uri))
+                        {
+                            authenticationRequests = Math.Max(0, authenticationRequests - 1);
+                            await CaptureRechargeSessionAsync();
+                        }
+                        return;
+                    }
                     Uri uri;
                     if (!closing && args.Response.StatusCode >= 200 && args.Response.StatusCode < 300 &&
                         IsOfficialOrigin(args.Request.Uri) && Uri.TryCreate(args.Request.Uri, UriKind.Absolute, out uri) &&
@@ -228,7 +288,7 @@ internal static class OfficialLogin
             catch (Exception)
             {
                 if (closing) return;
-                status.Text = "无法打开官方登录窗口，请确认 WebView2 Runtime 可用后重试。";
+                status.Text = rechargeMode ? "无法打开充值窗口，请确认 WebView2 Runtime 可用后重试。" : "无法打开官方登录窗口，请确认 WebView2 Runtime 可用后重试。";
                 installRuntime.Visible = true;
                 retry.Visible = true;
             }
@@ -242,7 +302,7 @@ internal static class OfficialLogin
 
         private async Task CheckSessionAsync(bool force)
         {
-            if (closing || sessionSynchronizationFailed || !initialized || !documentLoaded || checkingSession ||
+            if (rechargeMode || closing || sessionSynchronizationFailed || !initialized || !documentLoaded || checkingSession ||
                 (!force && DateTime.UtcNow < nextValidationUtc) || !IsOfficialOrigin(browser.CoreWebView2.Source)) return;
             checkingSession = true;
             try
@@ -364,10 +424,84 @@ internal static class OfficialLogin
             manager.AddOrUpdateCookie(cookie);
         }
 
+        private static bool IsAuthenticationMutation(string address)
+        {
+            Uri uri;
+            return IsOfficialOrigin(address) && Uri.TryCreate(address, UriKind.Absolute, out uri) &&
+                (uri.AbsolutePath == "/api/auth/refresh" || uri.AbsolutePath == "/api/auth/login" || uri.AbsolutePath == "/api/auth/logout");
+        }
+
+        private async Task CaptureRechargeSessionAsync()
+        {
+            if (!rechargeSessionReady || closing || rechargeCloseRequested || capturingRechargeSession || authenticationRequests != 0) return;
+            capturingRechargeSession = true;
+            try { await ReadRechargeSessionAsync(); }
+            catch { if (!closing) status.Text = "暂时无法同步登录状态，关闭窗口后将重新验证。"; }
+            finally { capturingRechargeSession = false; }
+        }
+
+        private async Task ReadRechargeSessionAsync()
+        {
+            var cookies = await browser.CoreWebView2.CookieManager.GetCookiesAsync(Origin + "/");
+            if (closing) return;
+            if (authenticationRequests != 0) throw new InvalidOperationException("登录状态正在更新。");
+            string access = null, refresh = null;
+            foreach (CoreWebView2Cookie cookie in cookies)
+            {
+                if (!IsOfficialCookie(cookie.Domain, cookie.Path, cookie.IsSecure, cookie.IsHttpOnly)) continue;
+                if (cookie.Name == AccountClient.AccessCookie) { if (access != null) throw new InvalidDataException(); access = cookie.Value; }
+                if (cookie.Name == AccountClient.RefreshCookie) { if (refresh != null) throw new InvalidDataException(); refresh = cookie.Value; }
+            }
+            AccountSession current = null;
+            if (!String.IsNullOrEmpty(access) || !String.IsNullOrEmpty(refresh))
+            {
+                current = new AccountSession { AccessToken = access, RefreshToken = refresh };
+                current.Validate();
+            }
+            if (current == null || rechargeSession == null || current.AccessToken != rechargeSession.AccessToken || current.RefreshToken != rechargeSession.RefreshToken)
+            {
+                rechargeSession = current;
+                sessionChanged(current);
+            }
+        }
+
+        private async Task CloseRechargeAsync()
+        {
+            rechargeCloseRequested = true;
+            cookieTimer.Stop();
+            browser.Enabled = false;
+            status.Text = "正在同步登录状态并关闭…";
+            try
+            {
+                // Let an in-flight cookie read or website refresh finish before handing
+                // ownership back. If it cannot finish, discard the old single-use token.
+                var timeout = Stopwatch.StartNew();
+                while ((capturingRechargeSession || authenticationRequests != 0) && timeout.ElapsedMilliseconds < 5000)
+                    await Task.Delay(50);
+                browser.CoreWebView2.Stop();
+                if (authenticationRequests != 0) sessionChanged(null);
+                else await ReadRechargeSessionAsync();
+            }
+            catch { sessionChanged(null); }
+            finally
+            {
+                rechargeCloseReady = true;
+                DialogResult = DialogResult.Cancel;
+                Close();
+            }
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs args)
         {
             base.OnFormClosing(args);
             if (args.Cancel) return;
+            if (rechargeMode && rechargeSessionReady && !rechargeCloseReady)
+            {
+                args.Cancel = true;
+                DialogResult = DialogResult.None;
+                if (!rechargeCloseRequested) { var completion = CloseRechargeAsync(); }
+                return;
+            }
             closing = true;
             cancellation.Cancel();
             cookieTimer.Stop();
