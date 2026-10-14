@@ -51,7 +51,7 @@ internal sealed class AccountFetchResult
 
 internal sealed class AccountApiKey
 {
-    internal string Id, Name, Prefix, Status;
+    internal string Id, Name, Prefix, Status, Secret;
     internal DateTime? ExpiresUtc;
     internal bool Usable { get { return Status == "ACTIVE" && (!ExpiresUtc.HasValue || ExpiresUtc.Value > DateTime.UtcNow); } }
     public override string ToString()
@@ -188,6 +188,58 @@ internal sealed class AccountClient
         finally { sessionGate.Release(); }
     }
 
+    // The public dashboard exposes a deliberate reveal action for each key.
+    // Keep this separate from the metadata list request so a failed reveal does
+    // not make the account panel lose the usable metadata or manual-entry path.
+    internal async Task<string> FetchApiKeySecretAsync(AccountSession session, string id, CancellationToken token, Action<AccountSession> sessionChanged)
+    {
+        if (String.IsNullOrWhiteSpace(id) || id.Length > 128) throw new InvalidDataException("API Key 标识无效。");
+        foreach (char c in id)
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_'))
+                throw new InvalidDataException("API Key 标识无效。");
+        await sessionGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var cookies = Cookies(session);
+            using (var client = Client(cookies))
+            {
+                bool refreshed = false;
+                if (String.IsNullOrEmpty(session.AccessToken))
+                {
+                    await RefreshAsync(client, cookies, token).ConfigureAwait(false);
+                    UpdateSession(session, cookies, sessionChanged);
+                    refreshed = true;
+                }
+                while (true)
+                {
+                    try
+                    {
+                        string body = await PostDocumentAsync(client, "api/user/api-keys/" + Uri.EscapeDataString(id) + "/reveal", token).ConfigureAwait(false);
+                        return ParseRevealedSecret(body);
+                    }
+                    catch (ExpiredSessionException error)
+                    {
+                        if (error.Revoked || refreshed || String.IsNullOrEmpty(session.RefreshToken)) throw new AccountAuthenticationException();
+                    }
+                    await RefreshAsync(client, cookies, token).ConfigureAwait(false);
+                    UpdateSession(session, cookies, sessionChanged);
+                    refreshed = true;
+                }
+            }
+        }
+        finally { sessionGate.Release(); }
+    }
+
+    internal static string ParseRevealedSecret(string body)
+    {
+        if (body == null || body.Length > MaximumResponseBytes) throw new InvalidDataException("API Key 返回无效。");
+        var row = ParseObject(body);
+        string value = Json.Text(row, "plaintext");
+        if (String.IsNullOrWhiteSpace(value) || value.Length > 8192) throw new InvalidDataException("API Key 返回无效。");
+        foreach (char c in value) if (c < 33 || c > 126) throw new InvalidDataException("API Key 返回无效。");
+        return value;
+    }
+
     internal static AccountApiKey[] ParseApiKeys(string body)
     {
         if (body == null || body.Length > MaximumResponseBytes) throw new InvalidDataException("API Key 列表无效。");
@@ -291,6 +343,27 @@ internal sealed class AccountClient
                 throw new InvalidDataException("账户接口返回了意外跳转，请稍后重试。");
             response.EnsureSuccessStatusCode();
             return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<string> PostDocumentAsync(HttpClient client, string route, CancellationToken token)
+    {
+        using (var request = new HttpRequestMessage(HttpMethod.Post, new Uri(Origin, route)))
+        {
+            request.Headers.Add("X-CSRF-Protection", "1");
+            request.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+            using (HttpResponseMessage response = await client.SendAsync(request, token).ConfigureAwait(false))
+            {
+                if ((int)response.StatusCode == 401)
+                {
+                    string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    throw new ExpiredSessionException(IsRevoked(body));
+                }
+                if ((int)response.StatusCode >= 300 && (int)response.StatusCode < 400)
+                    throw new InvalidDataException("账户接口返回了意外跳转，请稍后重试。");
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            }
         }
     }
 

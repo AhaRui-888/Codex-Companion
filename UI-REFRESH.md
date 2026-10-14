@@ -1,6 +1,18 @@
 # 桌面 UI 更新
 
-## 当前改动：单一 API Key 栏（2026-10-15，Asia/Shanghai）
+## 当前改动：固定窗口的 Key 浮层与官网完整密钥读取（2026-10-15，Asia/Shanghai）
+
+使用本机 Impeccable 的 polish、craft-floor 与 Operate 指引，并参考 design-taste-frontend 的既有界面精修原则。保留蓝白原生工具的视觉语言，将候选项改为圆角白色浮层、两行信息、浅蓝选择态和当前使用标记。浮层直接隶属主窗口，脱离滚动布局；展开和收起不改变窗口高宽、内容位置及主滚动范围。按剩余空间向下或向上显示最多四行，其余 Key 仅在列表内滚动。
+
+只读核对官网最新公开脚本 `/assets/index-BFDJKFrU.js`，确认查看操作为 `POST /api/user/api-keys/{id}/reveal`，响应字段为 `plaintext`。登录后自动读取首个可用完整 Key，其他 Key 选择时按需读取。保留现有配置优先、手动输入、DPAPI 缓存及登录会话轮换。读取失败不清空输入，编辑或切换账户后忽略迟到结果；键盘读取期间保持焦点和加载状态。列表与截图只显示前缀，全部测试使用虚构凭据。
+
+新版程序：`bin/key-overlay/CodexCompanion.exe`；独立程序：`dist/CodexCompanion.exe`；便携包：`dist/CodexCompanion-Windows.zip`。
+
+最终专项验证通过：UI 与异步选择 `test-output/ko-ui-final-ce3f3f/`、账户接口 `test-output/ko-account-final-5a16ee/`、中转契约 `test-output/ko-relay-9dff24/`、更新及打包 `test-output/20261015-034517-7559/`。UI 覆盖固定窗口尺寸与内容位置、默认/窄/高窗口、多个 Key 的滚动、空列表、键盘加载焦点、失败时保留输入及编辑后忽略迟到结果。三个发布位置的 EXE SHA-256 一致：`ec5f032578cd012a5b289a87abdc861150ef72c52460bbafd742629c02e1f0b9`。
+
+全量隔离回归记录：中间版本在 `test-output/ko-full-fa1a77/` 完整通过。最终版本的两次全量检查分别在 `test-output/20261015-034156-7357/` 和 `test-output/ko-final-c96252/` 的既有配置恢复测试中遇到 `File.Replace` 错误 `0x80070497`（无法删除要被替换的文件），失败点分别为旧配置恢复和控制器生命周期；最终全量未通过。更早一次账户文件替换也出现同一错误，独立账户复测通过。未修改原子文件写入/配置恢复代码或放宽断言；当前无法确认该间歇性文件系统错误的具体原因。
+
+## 历史验证：单一 API Key 栏（2026-10-15，Asia/Shanghai）
 
 删除独立的账户 Key 标题、伸缩按钮和第二个下拉框。主界面只保留一个 API Key 输入框，登录后默认收起候选列表；点击输入框或其中的箭头，在下方直接展示账户 Key，名称、前缀和状态分两行显示，宽度与输入框一致。候选列表保留所有 Key，超过四项时仅列表内部滚动。支持鼠标、方向键、Enter 与 Esc。
 

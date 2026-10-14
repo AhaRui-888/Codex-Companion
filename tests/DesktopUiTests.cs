@@ -117,15 +117,13 @@ internal static class DesktopUiTests
             key.Focus();
             Call(key, "OnClick", EventArgs.Empty);
             Application.DoEvents();
-            Assert(picker.Visible && picker.Expanded && form.ClientSize.Height > 504 && !viewport.VerticalScroll.Visible,
-                "Clicking the API bar must open the key list and fit the complete content automatically.");
-            // A width-only drag fits newly wrapped content; a deliberate short
-            // resize still permits scrolling instead of fighting the user.
+            Assert(picker.Visible && picker.Expanded && form.ClientSize == new Size(930, 504) && !viewport.VerticalScroll.Visible,
+                "Clicking the API bar must open an overlay without resizing or scrolling the window.");
             Call(form, "OnResizeBegin", EventArgs.Empty);
             form.ClientSize = new Size(660, form.ClientSize.Height);
             Call(form, "OnResizeEnd", EventArgs.Empty);
             Application.DoEvents();
-            Assert(!viewport.VerticalScroll.Visible, "Narrowing a signed-in window must adapt its height after the drag.");
+            Assert(form.ClientSize == new Size(660, 504), "A width-only drag must preserve the user's chosen window height.");
             SaveClient(form, Path.Combine(root, "desktop-keys-fit-narrow.png"));
             foreach (var size in new[] { new Size(930, 700), new Size(660, 820) })
             {
@@ -316,13 +314,12 @@ internal static class DesktopUiTests
     {
         var controller = new AppController(Path.Combine(root, "single-api-settings"), Path.Combine(root, "single-api-codex"));
         var values = new[] {
-            new AccountApiKey { Id = "one", Name = "工作项目", Prefix = "sk-work-", Status = "ACTIVE" },
+            new AccountApiKey { Id = "one", Name = "工作项目", Prefix = "sk-work-", Status = "ACTIVE", Secret = "sk-work-fixture-secret" },
             new AccountApiKey { Id = "two", Name = "个人项目", Prefix = "sk-personal-", Status = "ACTIVE" },
             new AccountApiKey { Id = "three", Name = "未保存完整密钥", Prefix = "sk-uncached-", Status = "ACTIVE" } };
         using (var cache = new AccountKeyPicker(controller.AccountDirectory))
         {
             cache.SetAccount("fixture-user", values, null);
-            cache.Remember("sk-work-fixture-secret");
             cache.Remember("sk-personal-fixture-secret");
         }
         using (var form = new MainForm(controller, true, new PreviewThemeGalleryService()))
@@ -339,20 +336,26 @@ internal static class DesktopUiTests
             Call(form, "UpdateAccountKeys", "fixture-user", values, null);
             Application.DoEvents();
             Assert(key.Text == "sk-work-fixture-secret" && key.UseSystemPasswordChar && !picker.Expanded && arrow.Visible,
-                "Login must fill the only API field from the encrypted account key and keep choices collapsed.");
+                "Login must fill the only API field from the revealed website key without needing a local cache.");
             Assert(!viewport.VerticalScroll.Visible, "The default signed-in API field must fit without scrolling.");
             Assert(CountControls<TextBox>(Field<Control>(form, "connectionPanel")) == 1
                 && CountControls<ComboBox>(Field<Control>(form, "connectionPanel")) == 0,
                 "The connection panel must have exactly one editable API field and no second selector field.");
             SaveClient(form, Path.Combine(root, "desktop-single-api-filled.png"));
             Size compactSize = form.ClientSize;
+            Rectangle previousActions = Field<Control>(form, "connectionActions").Bounds;
+            Point previousRoot = Field<Control>(form, "rootLayout").Location;
             key.Focus(); Call(key, "OnClick", EventArgs.Empty); Application.DoEvents();
             Assert(picker.Expanded && choices.Items.Count == 3, "Clicking the API field must show all key choices.");
+            Assert(form.ClientSize == compactSize && !viewport.VerticalScroll.Visible
+                && previousActions == Field<Control>(form, "connectionActions").Bounds && previousRoot == Field<Control>(form, "rootLayout").Location,
+                "Disclosure must leave window bounds, action positions, and content placement unchanged.");
+            Assert(picker.Parent == form && form.ClientRectangle.Contains(picker.Bounds), "The floating list must escape the layout and stay within the window.");
             SaveClient(form, Path.Combine(root, "desktop-single-api-choices.png"));
             choices.SelectedIndex = 1;
             Call(choices, "OnKeyDown", new KeyEventArgs(Keys.Enter)); Application.DoEvents();
             Assert(key.Text == "sk-personal-fixture-secret" && !picker.Expanded, "Choosing a key must fill the same field and collapse the list.");
-            Assert(form.ClientSize == compactSize, "Selecting a key must reclaim automatic disclosure height and restore the compact window.");
+            Assert(form.ClientSize == compactSize, "Selecting a key must preserve the window dimensions.");
             key.Clear();
             Call(form, "UpdateAccountKeys", "fixture-user", values, null);
             Assert(key.Text.Length == 0, "Refreshing an account must not refill a key deliberately cleared for manual entry.");
@@ -363,10 +366,34 @@ internal static class DesktopUiTests
             Assert(picker.Expanded && choices.Focused, "Down arrow must expose keyboard-accessible account choices.");
             choices.SelectedIndex = 2;
             Call(choices, "OnKeyDown", new KeyEventArgs(Keys.Enter));
-            Assert(key.Text.Length == 0 && Field<Label>(form, "credentialHintLabel").Text.Contains("粘贴完整密钥"),
-                "An uncached key must request its full value without using its prefix as a credential.");
+            Assert(key.Text == "sk-independent-manual-fixture" && Field<Label>(form, "credentialHintLabel").Text.Contains("粘贴完整密钥"),
+                "A failed reveal must preserve existing input and offer manual entry without treating a prefix as a credential.");
             Call(choices, "OnKeyDown", new KeyEventArgs(Keys.Escape));
             Assert(!picker.Expanded, "Escape must close account choices.");
+            var delayed = new System.Threading.Tasks.TaskCompletionSource<string>();
+            picker.RevealKey = entry => delayed.Task;
+            Call(key, "OnKeyDown", new KeyEventArgs(Keys.Down));
+            choices.SelectedIndex = 2;
+            Call(choices, "OnKeyDown", new KeyEventArgs(Keys.Enter));
+            Application.DoEvents();
+            Assert(picker.Expanded && choices.UseWaitCursor, "Pending key reads must show progress without losing focus or closing the overlay.");
+            key.Text = "sk-edited-while-reading-fixture";
+            delayed.SetResult("sk-uncached-revealed-fixture");
+            Application.DoEvents();
+            Assert(key.Text == "sk-edited-while-reading-fixture" && !picker.Expanded,
+                "A late reveal must not overwrite text edited while it was loading.");
+            var selectedSecret = new System.Threading.Tasks.TaskCompletionSource<string>();
+            picker.RevealKey = entry => selectedSecret.Task;
+            Call(key, "OnKeyDown", new KeyEventArgs(Keys.Down));
+            choices.SelectedIndex = 2;
+            Call(choices, "OnKeyDown", new KeyEventArgs(Keys.Enter));
+            Application.DoEvents();
+            Assert(picker.Expanded, "An asynchronous reveal must keep the selection open until its result arrives.");
+            selectedSecret.SetResult("sk-uncached-revealed-fixture");
+            Application.DoEvents();
+            Assert(key.Text == "sk-uncached-revealed-fixture" && !picker.Expanded,
+                "Selecting an uncached key must fill the same input with the website's full value.");
+            picker.RevealKey = null;
             key.Text = "sk-independent-manual-fixture";
             Call(form, "UpdateAccountKeys", null, new AccountApiKey[0], null);
             Assert(!arrow.Visible && !picker.Expanded && key.Text == "sk-independent-manual-fixture",
@@ -384,10 +411,18 @@ internal static class DesktopUiTests
             Call(form, "UpdateAccountKeys", "different-user", many, null);
             arrow.Focus(); arrow.PerformClick();
             Application.DoEvents();
-            Assert(choices.Items.Count == 8 && choices.Height == choices.ItemHeight * 4,
-                "Large accounts must retain every key in a bounded native scrolling list.");
+            Assert(choices.Items.Count == 8 && choices.Height >= choices.ItemHeight && choices.Height <= choices.ItemHeight * 4
+                && choices.Height % choices.ItemHeight == 0 && form.ClientRectangle.Contains(picker.Bounds),
+                "Large accounts must retain all keys in a list bounded by the available space: " + choices.Bounds + ", item=" + choices.ItemHeight);
             choices.SelectedIndex = 7;
             Assert(choices.TopIndex > 0, "The last account key must be reachable within the bounded list.");
+            SaveClient(form, Path.Combine(root, "desktop-api-many.png"));
+            picker.Collapse();
+            form.ClientSize = new Size(930, 850);
+            picker.Open(false);
+            Application.DoEvents();
+            Assert(choices.Height == choices.ItemHeight * 4, "A taller window must display four complete choices without resizing itself.");
+            SaveClient(form, Path.Combine(root, "desktop-api-many-tall.png"));
             Call(form, "UpdateAccountKeys", "different-user", new AccountApiKey[0], null);
             Assert(picker.Expanded && Field<Label>(picker, "message").Visible && !choices.Visible,
                 "An empty account must show its guidance without a second API field: expanded=" + picker.Expanded
@@ -410,7 +445,22 @@ internal static class DesktopUiTests
             form.DrawToBitmap(full, new Rectangle(Point.Empty, full.Size));
             Point client = form.PointToScreen(Point.Empty);
             using (var image = full.Clone(new Rectangle(client.X - form.Left, client.Y - form.Top, form.ClientSize.Width, form.ClientSize.Height), full.PixelFormat))
+            {
+                // WinForms' WM_PRINT omits overlapping child panels on this
+                // host. Composite the actual topmost overlay at its live bounds.
+                foreach (Control control in form.Controls)
+                    if (control is AccountKeyPicker && control.Visible)
+                    {
+                        Assert(form.Controls.GetChildIndex(control) == 0, "The key overlay must be above the scrolling content.");
+                        using (var overlay = new Bitmap(control.Width, control.Height))
+                        using (var graphics = Graphics.FromImage(image))
+                        {
+                            control.DrawToBitmap(overlay, new Rectangle(Point.Empty, overlay.Size));
+                            graphics.DrawImageUnscaled(overlay, control.Location);
+                        }
+                    }
                 image.Save(path);
+            }
         }
     }
     private static T Field<T>(object instance, string name)

@@ -58,10 +58,6 @@ public class MainForm : Form
     private Label restartNote;
     private bool responsiveLayoutReady;
     private bool updatingResponsiveLayout;
-    private bool accountContentNeedsFit;
-    private int accountDisclosureHeightAdded;
-    private int accountDisclosureFittedHeight;
-    private Size resizeStartClientSize;
     private bool compactHeader;
     private bool compactActions;
     private AdvertisementBanner advertisementBanner;
@@ -231,11 +227,10 @@ public class MainForm : Form
                 int labelHeight = PreviewPixels(22);
                 connectionLayout.RowStyles[0].Height = labelHeight;
                 connectionLayout.RowStyles[1].Height = PreviewPixels(36);
-                int keysHeight = accountKeyPicker.RequiredHeight(Math.Max(1, connectionWidth - PreviewPixels(108)));
-                connectionLayout.RowStyles[2].Height = keysHeight;
+                connectionLayout.RowStyles[2].Height = 0;
                 rootLayout.RowStyles[0].Height = PreviewPixels(compactHeader ? 74 : 42);
                 rootLayout.RowStyles[ConnectionRow].Height = connectionPanel.Margin.Vertical + connectionPanel.Padding.Vertical
-                    + labelHeight + PreviewPixels(36) + hintHeight + actionsHeight + keysHeight;
+                    + labelHeight + PreviewPixels(36) + hintHeight + actionsHeight;
                 rootLayout.RowStyles[StatusRow].Height = statusHeight;
                 contentHeight = rootLayout.Padding.Vertical;
                 foreach (RowStyle row in rootLayout.RowStyles) contentHeight += (int)Math.Ceiling(row.Height);
@@ -278,37 +273,19 @@ public class MainForm : Form
         finally { updatingResponsiveLayout = false; }
     }
 
-    private void FitAccountContentHeight()
+    private void PositionAccountKeyOverlay()
     {
-        UpdateResponsiveLayout();
-        if (!responsiveLayoutReady || WindowState != FormWindowState.Normal) return;
-        accountContentNeedsFit = false;
-        Rectangle working = Screen.FromControl(this).WorkingArea;
-        int availableHeight = working.Height - (Height - ClientSize.Height);
-        int nextHeight = Math.Min(rootLayout.Height, availableHeight);
-        if (nextHeight <= ClientSize.Height) return;
-        if (accountKeyPicker.Expanded)
-        {
-            if (ClientSize.Height != accountDisclosureFittedHeight) accountDisclosureHeightAdded = 0;
-            accountDisclosureHeightAdded += nextHeight - ClientSize.Height;
-            accountDisclosureFittedHeight = nextHeight;
-        }
-        // Content revealed by login or disclosure must fit by default. A later
-        // deliberate short resize still has native scrolling on small displays.
-        ClientSize = new Size(ClientSize.Width, nextHeight);
-        if (Bottom > working.Bottom) Top = Math.Max(working.Top, working.Bottom - Height);
-        UpdateResponsiveLayout();
-    }
-
-    private void ReclaimAccountDisclosureHeight()
-    {
-        // Reclaim only the height we added. A window the user resized while
-        // choosing keys retains its deliberate dimensions.
-        if (WindowState != FormWindowState.Normal) return;
-        if (accountDisclosureHeightAdded > 0 && ClientSize.Height == accountDisclosureFittedHeight)
-            ClientSize = new Size(ClientSize.Width, Math.Max(rootLayout.Height, ClientSize.Height - accountDisclosureHeightAdded));
-        accountDisclosureHeightAdded = 0;
-        accountDisclosureFittedHeight = 0;
+        if (!responsiveLayoutReady || accountKeyPicker == null || !accountKeyPicker.Expanded) return;
+        Rectangle anchor = RectangleToClient(apiKeyTextBox.Parent.RectangleToScreen(apiKeyTextBox.Parent.ClientRectangle));
+        if (anchor.Bottom <= 0 || anchor.Top >= ClientSize.Height) { accountKeyPicker.Collapse(); return; }
+        int gap = PreviewPixels(4);
+        int below = Math.Max(0, ClientSize.Height - anchor.Bottom - gap - PreviewPixels(8));
+        int above = Math.Max(0, anchor.Top - gap - PreviewPixels(8));
+        int desired = accountKeyPicker.RequiredHeight(anchor.Width);
+        bool openAbove = below < Math.Min(desired, PreviewPixels(100)) && above > below;
+        int height = accountKeyPicker.FitHeight(anchor.Width, openAbove ? above : below);
+        accountKeyPicker.SetBounds(anchor.Left, openAbove ? anchor.Top - gap - height : anchor.Bottom + gap, anchor.Width, height);
+        accountKeyPicker.BringToFront();
     }
 
     private static int MeasureTextWidth(Label label)
@@ -409,6 +386,7 @@ public class MainForm : Form
             keyFrame.Padding = new Padding(PreviewPixels(10), PreviewPixels(8), PreviewPixels(48) + listWidth, PreviewPixels(5));
             eyeButton.SetBounds(keyFrame.Width - PreviewPixels(45) - listWidth, 3, PreviewPixels(44) - 2, keyFrame.Height - 6);
             keyListButton.SetBounds(keyFrame.Width - PreviewPixels(28), 3, PreviewPixels(27) - 2, keyFrame.Height - 6);
+            PositionAccountKeyOverlay();
         };
         keyFrame.Layout += delegate { layoutCredentialOverlays(); };
         keyFrame.Paint += delegate(object sender, PaintEventArgs e) {
@@ -442,18 +420,13 @@ public class MainForm : Form
         connectionActions.Controls.Add(restoreButton);
         layout.Controls.Add(connectionActions, 0, 4);
         accountKeyPicker = new AccountKeyPicker(controller.AccountDirectory);
+        accountKeyPicker.AnchorControl = keyFrame;
+        if (!previewMode) accountKeyPicker.RevealKey = accountPanel.RevealApiKeyAsync;
         accountKeyPicker.HeightChanged += delegate {
-            float previousHeight = connectionLayout.RowStyles[2].Height;
             keyListButton.Expanded = accountKeyPicker.Expanded;
             keyListButton.AccessibleName = accountKeyPicker.Expanded ? "收起账户 API Key 列表" : "展开账户 API Key 列表";
             keyListButton.Invalidate();
-            UpdateResponsiveLayout();
-            if (connectionLayout.RowStyles[2].Height > previousHeight)
-            {
-                accountContentNeedsFit = true;
-                FitAccountContentHeight();
-            }
-            else if (!accountKeyPicker.Expanded) ReclaimAccountDisclosureHeight();
+            PositionAccountKeyOverlay();
         };
         accountKeyPicker.GuidanceChanged += delegate(string text) {
             if (accountKeyPicker.HasAccount) credentialHintLabel.Text = text;
@@ -464,12 +437,14 @@ public class MainForm : Form
             manuallyEditedApiKey = value == null;
             if (value != null) apiKeyTextBox.Focus();
         };
-        var choices = new TableLayoutPanel { Dock = DockStyle.Fill, Margin = Padding.Empty, ColumnCount = 2, RowCount = 1 };
-        choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        choices.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
-        choices.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        choices.Controls.Add(accountKeyPicker, 0, 0);
-        layout.Controls.Add(choices, 0, 2);
+        // A form-level overlay escapes the scrolling layout without affecting
+        // its extent, the window bounds, or the positions of other controls.
+        Controls.Add(accountKeyPicker);
+        layoutViewport.Scroll += delegate { PositionAccountKeyOverlay(); };
+        keyListButton.KeyDown += delegate(object sender, KeyEventArgs e) {
+            if (e.KeyCode == Keys.Down) { accountKeyPicker.Open(true); e.SuppressKeyPress = true; }
+            if (e.KeyCode == Keys.Escape) { accountKeyPicker.Collapse(); e.SuppressKeyPress = true; }
+        };
         apiKeyTextBox.Click += delegate { accountKeyPicker.Open(false); };
         keyFrame.Click += delegate { accountKeyPicker.Open(false); };
         apiKeyTextBox.KeyDown += delegate(object sender, KeyEventArgs e) {
@@ -482,6 +457,7 @@ public class MainForm : Form
             if (changingApiKeyText) return;
             manuallyEditedApiKey = true;
             automaticallyFilledKey = null;
+            accountKeyPicker.SetActiveKey(apiKeyTextBox.Text);
             accountKeyPicker.Collapse();
         };
         EventHandler closeChoicesWhenLeaving = delegate {
@@ -518,7 +494,7 @@ public class MainForm : Form
             string available = accountKeyPicker.AvailableKey(existing);
             if (available != null) SetApiKeyText(available, available);
             else if (error == null && keys.Length > 0)
-                credentialHintLabel.Text = "官网不返回已有完整 Key；首次粘贴并配置后，下次登录可自动填入。";
+                credentialHintLabel.Text = "点击输入框选择账户 Key，也可直接粘贴完整密钥。";
         }
         UpdateResponsiveLayout();
     }
@@ -526,7 +502,7 @@ public class MainForm : Form
     private void SetApiKeyText(string value, string automaticValue)
     {
         changingApiKeyText = true;
-        try { automaticallyFilledKey = automaticValue; apiKeyTextBox.Text = value; }
+        try { automaticallyFilledKey = automaticValue; apiKeyTextBox.Text = value; accountKeyPicker.SetActiveKey(value); }
         finally { changingApiKeyText = false; }
     }
 
@@ -797,24 +773,6 @@ public class MainForm : Form
             // WinForms restores its saved bounds after the resize notification.
             BeginInvoke((Action)delegate { if (!IsDisposed) AdjustAdvertisementWindowHeight(); });
         }
-        if (accountContentNeedsFit && WindowState == FormWindowState.Normal && IsHandleCreated)
-            BeginInvoke((Action)delegate { if (!IsDisposed && accountContentNeedsFit) FitAccountContentHeight(); });
-        if (accountDisclosureHeightAdded > 0 && accountKeyPicker != null && !accountKeyPicker.Expanded
-            && WindowState == FormWindowState.Normal && IsHandleCreated)
-            BeginInvoke((Action)delegate { if (!IsDisposed && !accountKeyPicker.Expanded) ReclaimAccountDisclosureHeight(); });
-    }
-
-    protected override void OnResizeBegin(EventArgs e)
-    {
-        resizeStartClientSize = ClientSize;
-        base.OnResizeBegin(e);
-    }
-
-    protected override void OnResizeEnd(EventArgs e)
-    {
-        base.OnResizeEnd(e);
-        if (accountKeyPicker != null && accountKeyPicker.HasAccount && ClientSize.Width != resizeStartClientSize.Width
-            && ClientSize.Height == resizeStartClientSize.Height) FitAccountContentHeight();
     }
 
     protected override void Dispose(bool disposing)

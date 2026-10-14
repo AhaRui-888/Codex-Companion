@@ -2,11 +2,12 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
-// Only the selected, successfully used full key is cached. Website metadata
-// cannot recover plaintext: it must never be treated as a model credential.
-internal sealed class AccountKeyPicker : Panel
+// Revealed website keys stay in memory. Only successfully configured keys
+// are persisted, using the existing per-account DPAPI cache.
+internal sealed class AccountKeyPicker : DesktopSurface, IMessageFilter
 {
     private readonly ListBox keys;
     private readonly Label message;
@@ -14,6 +15,13 @@ internal sealed class AccountKeyPicker : Panel
     private string userId;
     private AccountApiKey[] entries = new AccountApiKey[0];
     private bool expanded, updating;
+    private bool readingSecret;
+    private AccountApiKey loadingKey;
+    private int selectionGeneration;
+    private int hoveredIndex = -1;
+    private string activeKey;
+    internal Control AnchorControl;
+    internal Func<AccountApiKey, Task<string>> RevealKey;
     internal event Action HeightChanged;
     internal event Action<string> KeyChosen;
     internal event Action<string> GuidanceChanged;
@@ -25,14 +33,23 @@ internal sealed class AccountKeyPicker : Panel
     {
         this.directory = directory;
         Font = new Font("Segoe UI", 13F, FontStyle.Regular, GraphicsUnit.Pixel);
-        Margin = Padding.Empty; Dock = DockStyle.Fill;
+        Margin = Padding.Empty; Dock = DockStyle.None; CornerRadius = 8;
         keys = new ListBox { DrawMode = DrawMode.OwnerDrawFixed, IntegralHeight = false, BorderStyle = BorderStyle.None,
-            BackColor = Color.FromArgb(248, 250, 253), ForeColor = DesktopPalette.Text,
+            BackColor = DesktopPalette.Surface, ForeColor = DesktopPalette.Text,
             AccessibleName = "选择已登录账户的 API Key", Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Pixel) };
         message = new Label { ForeColor = DesktopPalette.Muted, UseMnemonic = false, UseCompatibleTextRendering = true,
             Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Pixel) };
         Controls.AddRange(new Control[] { keys, message });
         keys.DrawItem += DrawKey;
+        keys.SelectedIndexChanged += delegate {
+            if (!updating && readingSecret && loadingKey != null && keys.Items.Contains(loadingKey) && keys.SelectedItem != loadingKey)
+                keys.SelectedItem = loadingKey;
+        };
+        keys.MouseMove += delegate(object sender, MouseEventArgs e) {
+            int index = keys.IndexFromPoint(e.Location);
+            if (index != hoveredIndex) { hoveredIndex = index; keys.Invalidate(); }
+        };
+        keys.MouseLeave += delegate { hoveredIndex = -1; keys.Invalidate(); };
         keys.MouseClick += delegate(object sender, MouseEventArgs e) {
             int index = keys.IndexFromPoint(e.Location);
             if (index >= 0) { keys.SelectedIndex = index; SelectKey(); }
@@ -56,6 +73,7 @@ internal sealed class AccountKeyPicker : Panel
         bool changed = !expanded;
         expanded = true;
         Visible = true;
+        if (changed) Application.AddMessageFilter(this);
         RefreshLayout();
         if (changed && HeightChanged != null) HeightChanged();
         if (focusList && entries.Length > 0) keys.Focus();
@@ -65,9 +83,30 @@ internal sealed class AccountKeyPicker : Panel
     {
         if (!expanded) return;
         expanded = false;
+        selectionGeneration++;
+        Application.RemoveMessageFilter(this);
         Visible = false;
         if (HeightChanged != null) HeightChanged();
     }
+
+    public bool PreFilterMessage(ref Message m)
+    {
+        if (expanded && (m.Msg == 0x201 || m.Msg == 0x204 || m.Msg == 0x207 || m.Msg == 0xA1))
+        {
+            Point point = Control.MousePosition;
+            if (!RectangleToScreen(ClientRectangle).Contains(point) &&
+                (AnchorControl == null || !AnchorControl.RectangleToScreen(AnchorControl.ClientRectangle).Contains(point))) Collapse();
+        }
+        return false;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { selectionGeneration++; Application.RemoveMessageFilter(this); }
+        base.Dispose(disposing);
+    }
+
+    internal void SetActiveKey(string value) { activeKey = value; keys.Invalidate(); }
 
     private int Pixels(int value) { return (int)Math.Round(value * Font.Size / 13F); }
     private int MessageHeight(int width)
@@ -79,7 +118,15 @@ internal sealed class AccountKeyPicker : Panel
 
     internal int RequiredHeight(int width)
     {
-        return !HasAccount || !expanded ? 0 : Pixels(8) + (entries.Length == 0 ? MessageHeight(width) : Math.Min(entries.Length, 4) * Pixels(42));
+        return !HasAccount || !expanded ? 0 : Pixels(12) + (entries.Length == 0 ? MessageHeight(width - Pixels(24)) : Math.Min(entries.Length, 4) * Pixels(44));
+    }
+
+    internal int FitHeight(int width, int available)
+    {
+        int height = RequiredHeight(width);
+        if (entries.Length == 0) return Math.Min(height, available);
+        int rows = Math.Max(1, Math.Min(4, (available - Pixels(12)) / Pixels(44)));
+        return Math.Min(height, Pixels(12) + rows * Pixels(44));
     }
 
     private void RefreshLayout()
@@ -87,9 +134,9 @@ internal sealed class AccountKeyPicker : Panel
         if (keys == null) return;
         keys.Visible = expanded && HasAccount && entries.Length > 0;
         message.Visible = expanded && HasAccount && entries.Length == 0;
-        keys.ItemHeight = Pixels(42);
-        keys.SetBounds(0, Pixels(6), ClientSize.Width, Math.Min(entries.Length, 4) * keys.ItemHeight);
-        message.SetBounds(0, Pixels(6), ClientSize.Width, MessageHeight(ClientSize.Width));
+        keys.ItemHeight = Pixels(44);
+        keys.SetBounds(Pixels(6), Pixels(6), Math.Max(1, ClientSize.Width - Pixels(12)), Math.Max(1, ClientSize.Height - Pixels(12)));
+        message.SetBounds(Pixels(12), Pixels(6), Math.Max(1, ClientSize.Width - Pixels(24)), MessageHeight(ClientSize.Width - Pixels(24)));
     }
 
     private void DrawKey(object sender, DrawItemEventArgs e)
@@ -97,14 +144,24 @@ internal sealed class AccountKeyPicker : Panel
         if (e.Index < 0 || e.Index >= entries.Length) return;
         var entry = (AccountApiKey)keys.Items[e.Index];
         bool selected = (e.State & DrawItemState.Selected) != 0;
-        using (var fill = new SolidBrush(selected ? DesktopPalette.Selected : keys.BackColor))
-            e.Graphics.FillRectangle(fill, e.Bounds);
-        var bounds = new Rectangle(e.Bounds.Left + Pixels(10), e.Bounds.Top + Pixels(3), Math.Max(0, e.Bounds.Width - Pixels(20)), Pixels(19));
+        e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds);
+        using (var fill = new SolidBrush(selected ? DesktopPalette.Selected : e.Index == hoveredIndex ? DesktopPalette.Page : keys.BackColor))
+        using (var shape = DesktopPalette.Round(new RectangleF(e.Bounds.Left, e.Bounds.Top + 1, e.Bounds.Width, e.Bounds.Height - 2), Pixels(5)))
+            e.Graphics.FillPath(fill, shape);
+        var bounds = new Rectangle(e.Bounds.Left + Pixels(10), e.Bounds.Top + Pixels(3), Math.Max(0, e.Bounds.Width - Pixels(40)), Pixels(20));
         DesktopPalette.DrawText(e.Graphics, entry.Name, keys.Font, bounds,
             entry.Usable ? DesktopPalette.Text : DesktopPalette.Muted, StringAlignment.Near);
-        bounds.Y += Pixels(18); bounds.Height = Pixels(17);
+        bounds.Y += Pixels(19); bounds.Height = Pixels(17);
         string state = entry.Usable ? "可用" : entry.Status == "REVOKED" ? "已撤销" : entry.Status == "DISABLED" ? "已停用" : "已过期 / 不可用";
-        DesktopPalette.DrawText(e.Graphics, entry.Prefix + "… · " + state, message.Font, bounds, DesktopPalette.Muted, StringAlignment.Near);
+        if (readingSecret && entry == loadingKey) state = "正在读取…";
+        bool active = Matches(entry, activeKey);
+        DesktopPalette.DrawText(e.Graphics, entry.Prefix + "… · " + (active ? "正在使用" : state), message.Font, bounds, DesktopPalette.Muted, StringAlignment.Near);
+        if (active)
+        {
+            int x = e.Bounds.Right - Pixels(20), y = e.Bounds.Top + e.Bounds.Height / 2;
+            using (var pen = new Pen(DesktopPalette.Accent, Pixels(2)))
+                e.Graphics.DrawLines(pen, new[] { new Point(x - Pixels(4), y), new Point(x, y + Pixels(4)), new Point(x + Pixels(7), y - Pixels(4)) });
+        }
         if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
     }
 
@@ -119,6 +176,7 @@ internal sealed class AccountKeyPicker : Panel
     internal void SetAccount(string account, AccountApiKey[] values, string error)
     {
         bool changedUser = userId != account;
+        selectionGeneration++;
         string previousId = keys.SelectedItem is AccountApiKey ? ((AccountApiKey)keys.SelectedItem).Id : null;
         userId = account; entries = values ?? new AccountApiKey[0];
         updating = true;
@@ -128,7 +186,7 @@ internal sealed class AccountKeyPicker : Panel
         if (index < 0) index = Array.FindIndex(entries, item => item.Usable);
         keys.SelectedIndex = index >= 0 ? index : entries.Length > 0 ? 0 : -1;
         updating = false;
-        if (changedUser || !HasAccount) expanded = false;
+        if (changedUser || !HasAccount) Collapse();
         Visible = HasAccount && expanded;
         keys.Enabled = entries.Length > 0;
         SetMessage(error ?? (entries.Length == 0 ? "此账户暂无 API Key，可直接手动粘贴。" : "点击输入框选择账户 Key，也可清空后手动填写。"));
@@ -143,6 +201,7 @@ internal sealed class AccountKeyPicker : Panel
     private string CachedKey(AccountApiKey entry)
     {
         if (!entry.Usable || String.IsNullOrEmpty(userId)) return null;
+        if (Matches(entry, entry.Secret)) return entry.Secret;
         string path = KeyPath(entry);
         if (!File.Exists(path) || new FileInfo(path).Length > 32768) return null;
         byte[] plain = null;
@@ -163,15 +222,28 @@ internal sealed class AccountKeyPicker : Panel
             && entries.Count(item => secret.StartsWith(item.Prefix, StringComparison.Ordinal)) == 1;
     }
 
-    private void SelectKey()
+    private async void SelectKey()
     {
-        if (updating || keys.SelectedItem == null) return;
+        if (updating || readingSecret || keys.SelectedItem == null) return;
         var entry = (AccountApiKey)keys.SelectedItem;
         string value = CachedKey(entry);
+        int requestGeneration = ++selectionGeneration;
+        if (entry.Usable && value == null && RevealKey != null)
+        {
+            readingSecret = true;
+            loadingKey = entry;
+            keys.UseWaitCursor = true;
+            keys.Invalidate();
+            try { value = await RevealKey(entry); }
+            catch (Exception) { value = null; }
+            finally { readingSecret = false; loadingKey = null; if (!IsDisposed) { keys.UseWaitCursor = false; keys.Invalidate(); } }
+            if (IsDisposed || requestGeneration != selectionGeneration) return;
+            if (!Matches(entry, value)) value = null;
+        }
         SetMessage(!entry.Usable ? "此 Key 已停用、撤销或过期，请选择其他 Key。" : value == null
-            ? "此 Key 尚无本机副本，请粘贴完整密钥；配置成功后可自动填入。" : "已填入所选 Key；清空后可手动填写。");
-        if (KeyChosen != null) KeyChosen(value);
-        if (value != null) Collapse();
+            ? "未能读取完整密钥，请重试或手动粘贴完整密钥。" : "已填入所选 Key；清空后可手动填写。");
+        if (value != null && KeyChosen != null) KeyChosen(value);
+        Collapse();
     }
 
     internal string AvailableKey(string existing)

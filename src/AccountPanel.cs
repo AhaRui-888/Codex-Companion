@@ -27,9 +27,11 @@ internal sealed class AccountPanel : DesktopSurface
     private bool fetching;
     private bool signingIn;
     private bool recharging;
+    private bool revealingKey;
     private bool operationsEnabled = true;
     private int generation;
     private string keysUserId;
+    private AccountApiKey[] accountKeys = new AccountApiKey[0];
     internal event Action<string, AccountApiKey[], string> ApiKeysChanged;
 
     private async Task LoadApiKeysAsync()
@@ -42,14 +44,64 @@ internal sealed class AccountPanel : DesktopSurface
             AccountApiKey[] keys = await client.FetchApiKeysAsync(requestSession, lifetime.Token, value => SaveSessionSafely(value));
             if (IsDisposed || session != requestSession || lifetime.IsCancellationRequested) return;
             keysUserId = userId;
-            ApiKeysChanged(userId, keys, null);
+            accountKeys = keys;
+            string keyError = null;
+            foreach (var key in keys)
+            {
+                if (!key.Usable) continue;
+                try { await RevealApiKeyCoreAsync(key); }
+                catch (AccountAuthenticationException) { throw; }
+                catch (Exception) { keyError = "完整 Key 读取失败，可在列表中重试或手动粘贴。"; }
+                break;
+            }
+            if (IsDisposed || session != requestSession || lifetime.IsCancellationRequested) return;
+            ApiKeysChanged(userId, keys, keyError);
         }
         catch (AccountAuthenticationException) { throw; }
         catch (Exception)
         {
-            if (!IsDisposed && !lifetime.IsCancellationRequested)
+            if (!IsDisposed && session == requestSession && !lifetime.IsCancellationRequested)
                 ApiKeysChanged(userId, new AccountApiKey[0], "读取失败，请点击刷新余额重试；仍可手动粘贴。");
         }
+    }
+
+    internal Task<string> RevealApiKeyAsync(AccountApiKey key)
+    {
+        if (fetching || signingIn || !operationsEnabled)
+            throw new InvalidOperationException("账户正在更新，请稍后重试。");
+        return RevealApiKeyCoreAsync(key);
+    }
+
+    private async Task<string> RevealApiKeyCoreAsync(AccountApiKey key)
+    {
+        if (previewMode || session == null || snapshot == null || revealingKey || recharging ||
+            !key.Usable || Array.IndexOf(accountKeys, key) < 0 || keysUserId != snapshot.UserId)
+            throw new InvalidOperationException("当前无法读取 Key，请稍后重试。");
+        var requestSession = session;
+        int requestGeneration = generation;
+        revealingKey = true;
+        SetButtons();
+        try
+        {
+            string secret = await client.FetchApiKeySecretAsync(requestSession, key.Id, lifetime.Token, value => SaveSessionSafely(value));
+            if (IsDisposed || session != requestSession || generation != requestGeneration || lifetime.IsCancellationRequested || Array.IndexOf(accountKeys, key) < 0)
+                throw new OperationCanceledException();
+            if (secret.Length <= key.Prefix.Length || !secret.StartsWith(key.Prefix, StringComparison.Ordinal))
+                throw new System.IO.InvalidDataException("完整 Key 与所选条目不匹配。");
+            key.Secret = secret;
+            return secret;
+        }
+        catch (AccountAuthenticationException)
+        {
+            if (!IsDisposed && generation == requestGeneration)
+            {
+                session = null; snapshot = null; generation++;
+                try { store.Clear(); } catch { }
+                ShowSignedOut(); accountStatusLabel.Text = "登录已过期，请重新登录。";
+            }
+            throw;
+        }
+        finally { revealingKey = false; if (!IsDisposed) SetButtons(); }
     }
 
     internal AccountPanel(bool previewMode, string dataDirectory)
@@ -158,7 +210,7 @@ internal sealed class AccountPanel : DesktopSurface
 
     private void SetButtons()
     {
-        bool enabled = operationsEnabled && !previewMode && !fetching && !signingIn && !recharging && !lifetime.IsCancellationRequested;
+        bool enabled = operationsEnabled && !previewMode && !fetching && !signingIn && !recharging && !revealingKey && !lifetime.IsCancellationRequested;
         loginButton.Visible = session == null;
         refreshBalanceButton.Visible = session != null;
         logoutButton.Visible = session != null;
@@ -171,7 +223,7 @@ internal sealed class AccountPanel : DesktopSurface
 
     private async void LoginClicked(object sender, EventArgs e)
     {
-        if (previewMode || signingIn || fetching || recharging || !operationsEnabled) return;
+        if (previewMode || signingIn || fetching || recharging || revealingKey || !operationsEnabled) return;
         signingIn = true;
         SetButtons();
         AccountFetchResult verified = null;
@@ -212,7 +264,7 @@ internal sealed class AccountPanel : DesktopSurface
 
     internal async Task RefreshAsync(bool manual)
     {
-        if (previewMode || session == null || fetching || signingIn || recharging || IsDisposed || lifetime.IsCancellationRequested) return;
+        if (previewMode || session == null || fetching || signingIn || recharging || revealingKey || IsDisposed || lifetime.IsCancellationRequested) return;
         fetching = true;
         int requestGeneration = generation;
         AccountSession requestSession = session;
@@ -258,7 +310,7 @@ internal sealed class AccountPanel : DesktopSurface
 
     internal async Task LogoutAsync()
     {
-        if (previewMode || session == null || signingIn || fetching || recharging || IsDisposed) return;
+        if (previewMode || session == null || signingIn || fetching || recharging || revealingKey || IsDisposed) return;
         AccountSession previous = session;
         try { store.Clear(); }
         catch (Exception) { accountStatusLabel.Text = "本机登录信息清除失败，请重试退出。"; return; }
@@ -277,7 +329,7 @@ internal sealed class AccountPanel : DesktopSurface
 
     internal async Task RechargeAsync()
     {
-        if (previewMode || session == null || snapshot == null || fetching || signingIn || recharging ||
+        if (previewMode || session == null || snapshot == null || fetching || signingIn || recharging || revealingKey ||
             !operationsEnabled || IsDisposed || lifetime.IsCancellationRequested) return;
         recharging = true;
         SetButtons();
@@ -329,6 +381,7 @@ internal sealed class AccountPanel : DesktopSurface
     private void ShowSignedOut()
     {
         keysUserId = null;
+        accountKeys = new AccountApiKey[0];
         if (ApiKeysChanged != null) ApiKeysChanged(null, new AccountApiKey[0], null);
         balanceLabel.Text = "登录后查看余额";
         accountLabel.Text = "xai-tools.cn 账户";

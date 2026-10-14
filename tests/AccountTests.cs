@@ -61,6 +61,19 @@ internal static class AccountTests
         var keys = client.FetchApiKeysAsync(session, CancellationToken.None, updated => savedRefresh = updated.RefreshToken).GetAwaiter().GetResult();
         Assert(keys.Length == 3 && handler.Refreshes == 1 && savedRefresh == "rotated-refresh" && handler.SafeRequests,
             "automatic key list loading must preserve HTTPS authentication and single-use session rotation");
+        var revealHandler = new AccountHandler(true);
+        var revealClient = new AccountClient(cookies => { revealHandler.Cookies = cookies; return revealHandler; }, TimeSpan.FromSeconds(3));
+        string revealed = revealClient.FetchApiKeySecretAsync(Session(), "one", CancellationToken.None, null).GetAwaiter().GetResult();
+        Assert(revealed == "sk-fixture-one-revealed" && revealHandler.Refreshes == 1 && revealHandler.Reveals == 1 && revealHandler.SafeRequests,
+            "revealing a key must use the official POST contract, with authenticated retry after rotation");
+        foreach (string invalid in new[] { "{}", "{\"plaintext\":true}", "{\"plaintext\":\"has space\"}", "{\"plaintext\":\"line\\nfeed\"}", "{\"plaintext\":\"中文\"}" })
+            Reject<InvalidDataException>(() => AccountClient.ParseRevealedSecret(invalid));
+        var redirectClient = new AccountClient(cookies => new StaticHandler(HttpStatusCode.Redirect, "{}"), TimeSpan.FromSeconds(3));
+        Reject<InvalidDataException>(() => redirectClient.FetchApiKeySecretAsync(Session(), "one", CancellationToken.None, null).GetAwaiter().GetResult());
+        foreach (string id in new[] { "..", "one/../../auth", "one?secret", "one#fragment" })
+            Reject<InvalidDataException>(() => revealClient.FetchApiKeySecretAsync(Session(), id, CancellationToken.None, null).GetAwaiter().GetResult());
+        var revokedClient = new AccountClient(cookies => new StaticHandler(HttpStatusCode.Unauthorized, "{\"code\":\"session_revoked\"}"), TimeSpan.FromSeconds(3));
+        Reject<AccountAuthenticationException>(() => revokedClient.FetchApiKeySecretAsync(Session(), "one", CancellationToken.None, null).GetAwaiter().GetResult());
         using (var picker = new AccountKeyPicker(root))
         {
             picker.SetAccount("user-one", entries, null);
@@ -82,6 +95,12 @@ internal static class AccountTests
                 Assert(!System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(path)).Contains("sk-fixture"), "cached keys must use DPAPI encryption");
             picker.SetAccount("user-two", entries, null);
             Assert(picker.AvailableKey(null) == null, "account changes must not reuse another user's cached keys");
+            entries[0].Secret = revealed;
+            Assert(picker.AvailableKey(null) == revealed && !entries[0].ToString().Contains(revealed),
+                "officially revealed keys must fill without a local cache and stay out of list descriptions");
+            entries[0].Secret = "sk-wrong-prefix-secret";
+            Assert(picker.AvailableKey(null) == null, "a revealed secret must match the selected key prefix");
+            entries[0].Secret = null;
             picker.SetAccount("user-one", AccountClient.ParseApiKeys(KeyFixture.Replace("ACTIVE", "REVOKED")), null);
             Assert(picker.AvailableKey(null) == null, "revoked keys must not autofill from the cache");
             picker.SetAccount(null, new AccountApiKey[0], null);
@@ -241,7 +260,8 @@ internal static class AccountTests
                     form.Controls.Add(panel);
                     int keyLists = 0;
                     panel.ApiKeysChanged += (id, values, error) => {
-                        if (id != null) { Assert(error == null && values.Length == 3, "login must automatically load this user's key list"); keyLists++; }
+                        if (id != null) { Assert(error == null && values.Length == 3 && values[0].Secret == "sk-fixture-one-revealed",
+                            "login must automatically reveal the first usable key and preserve all key choices"); keyLists++; }
                     };
                     form.Shown += async delegate
                     {
@@ -261,7 +281,7 @@ internal static class AccountTests
                             panel.SetOperationsEnabled(true);
                             int requests = handler.AuthenticatedRequests;
                             await panel.RechargeAsync();
-                            Assert(opened == 1 && handler.AuthenticatedRequests == requests + 5,
+                            Assert(opened == 1 && handler.AuthenticatedRequests == requests + 6,
                                 "recharge must validate before opening and fetch the wallet again after closing");
                             var balance = (System.Windows.Forms.Label)typeof(AccountPanel).GetField("balanceLabel",
                                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(panel);
@@ -329,7 +349,7 @@ internal static class AccountTests
     private sealed class AccountHandler : HttpMessageHandler
     {
         internal CookieContainer Cookies;
-        internal int Refreshes, Logouts, AuthenticatedRequests;
+        internal int Refreshes, Logouts, AuthenticatedRequests, Reveals;
         internal bool SafeRequests = true, Csrf, FailWallet, RejectAuthentication, Revoked, ExpireLogout;
         internal Action AfterRefreshResponse;
         internal string WalletMicroCny = "10000000";
@@ -367,6 +387,13 @@ internal static class AccountTests
                 return Response(HttpStatusCode.Unauthorized, "{\"error\":{\"code\":\"" + (Revoked ? "session_revoked" : "authentication_required") + "\"}}");
             if (path == "/api/auth/me") return Response(HttpStatusCode.OK, "{\"id\":\"fixture-user\",\"email\":\"fixture@example.test\"}");
             if (path == "/api/user/api-keys") return Response(HttpStatusCode.OK, KeyFixture);
+            if (path == "/api/user/api-keys/one/reveal" || path == "/api/user/api-keys/two/reveal")
+            {
+                Assert(request.Method == HttpMethod.Post && request.Headers.Contains("X-CSRF-Protection"),
+                    "key reveal must use POST with the official CSRF header");
+                Reveals++;
+                return Response(HttpStatusCode.OK, "{\"plaintext\":\"sk-fixture-" + (path.Contains("/one/") ? "one" : "two") + "-revealed\"}");
+            }
             if (path == "/api/user/wallet") return FailWallet ? Response(HttpStatusCode.ServiceUnavailable, "{}") :
                 Response(HttpStatusCode.OK, "{\"balanceMicroCny\":\"" + WalletMicroCny + "\",\"reservedMicroCny\":\"2000000\"}");
             throw new InvalidOperationException("Unexpected account endpoint.");
